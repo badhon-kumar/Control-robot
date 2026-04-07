@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# LaTeX build files
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
