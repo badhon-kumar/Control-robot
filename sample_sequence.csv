@@ -1,0 +1,9 @@
+step,delay_s,j1_angle,j1_speed,j2_angle,j2_speed,j3_angle,j3_speed,j4_angle,j4_speed,j5_angle,j5_speed,j6_angle,j6_speed,
+Home Position,10,0,60,0,60,0,60,0,60,0,60,0,60,
+Reach Forward,20,,,30,90,-60,90,,,,,,,
+Rotate Base Left,20,45,120,,,,,,,,,,,
+Wrist Adjust,15,,,,,, ,-20,180,15,180,,,
+Tool Rotation,20,,,,,,,,,,,,90,200
+Reach Right,20,-30,90,20,90,-40,90,,,,,,,
+Combined Move,25,15,60,25,60,-30,60,10,120,-10,120,45,150,
+Return Home,20,0,60,0,60,0,60,0,60,0,60,0,60,
