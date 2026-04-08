@@ -14,7 +14,7 @@ CSV FORMAT (see sample_sequence.csv):
   - step column is just a label (can be any text).
 
 Run:
-    python3.10 gui.py
+    python gui.py
 """
 
 import tkinter as tk
@@ -65,8 +65,8 @@ JNAMES    = ["Base","Shoulder","Elbow","Wrist1","Wrist2","Tool"]
 @dataclass
 class SequenceStep:
     """One row from the CSV file."""
-    step_label: str                          # e.g. "Step 1" or any text label
-    delay_s:    float                        # wait after step completes (seconds)
+    step_label: str                                  # e.g. "Step 1" or any text label
+    delay_s:    float                                # wait after step completes (seconds)
     # Per-joint: (target_angle_deg, speed_dps) or None if cell was empty
     joints: list = field(default_factory=lambda: [None]*6)
 
@@ -100,7 +100,7 @@ def parse_csv(filepath: str) -> tuple[list[SequenceStep], str]:
     errors = []
 
     try:
-        with open(filepath, newline="") as f:
+        with open(filepath, newline="", encoding='utf-8-sig') as f:
             reader = csv.DictReader(f)
 
             # Validate header
@@ -336,6 +336,10 @@ class ManualTab(tk.Frame):
     def _home(self):
         robot = self._req()
         if robot:
+            # FIX 1: Snap sliders to 0 visually
+            for card in self.cards.values():
+                card.slider_var.set(0.0)
+                
             threading.Thread(target=robot.go_home,
                              kwargs={"speed_dps":60,"wait":False},
                              daemon=True).start()
@@ -380,13 +384,27 @@ class CsvTab(tk.Frame):
         self._log        = log_fn
         self._steps: list[SequenceStep] = []
         self._filepath   = tk.StringVar(value="")
-        self._delay_var  = tk.StringVar(value="1.0")
+        
+        # FIX 2: Default to 0.0 so CSV step delays are used automatically
+        self._delay_var  = tk.StringVar(value="0.0")
+        
         self._wait_var   = tk.BooleanVar(value=True)
         self._loop_var   = tk.BooleanVar(value=False)
         self._running    = False
         self._paused     = False
         self._abort_flag = threading.Event()
         self._current_step = -1
+
+        # Stopwatch state
+        self._seq_start_time:  float = 0.0   # when full sequence started
+        self._step_start_time: float = 0.0   # when current step started
+        self._delay_start_time: float = 0.0  # when current delay started
+        self._phase = "idle"                 # "motion" | "delay" | "idle"
+        self._stopwatch_job = None
+
+        # Step timing log: list of (label, motion_s, delay_s)
+        self._timing_log: list[tuple] = []
+
         self._build()
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -489,6 +507,138 @@ class CsvTab(tk.Frame):
                         style="Seq.Horizontal.TProgressbar",
                         length=400).pack(fill="x", padx=16, pady=(0,6))
 
+        # ── Stopwatch + Live Position side-by-side row ────────────────────────
+        instruments_row = tk.Frame(self, bg=BG)
+        instruments_row.pack(fill="x", padx=16, pady=(0,6))
+
+        # LEFT: Stopwatch panel
+        sw_card = tk.Frame(instruments_row, bg=CARD,
+                           highlightbackground=BORDER, highlightthickness=1)
+        sw_card.pack(side="left", fill="both", expand=True, padx=(0,6))
+
+        tk.Label(sw_card, text="⏱  STOPWATCH  &  TIMING",
+                 font=("Courier New",7,"bold"), fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(6,2))
+
+        # Big elapsed time display
+        clock_row = tk.Frame(sw_card, bg=CARD)
+        clock_row.pack(fill="x", padx=10, pady=(2,4))
+
+        # Total sequence clock
+        seq_col = tk.Frame(clock_row, bg=CARD)
+        seq_col.pack(side="left", padx=(0,20))
+        tk.Label(seq_col, text="SEQUENCE TOTAL",
+                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+        self.lbl_seq_clock = tk.Label(seq_col, text="00:00.0",
+                 font=("Courier New",22,"bold"), fg=ACCENT, bg=CARD)
+        self.lbl_seq_clock.pack()
+
+        # Step motion clock
+        mot_col = tk.Frame(clock_row, bg=CARD)
+        mot_col.pack(side="left", padx=(0,16))
+        tk.Label(mot_col, text="MOTION",
+                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+        self.lbl_motion_clock = tk.Label(mot_col, text="0.00s",
+                 font=("Courier New",16,"bold"), fg=BLUE, bg=CARD)
+        self.lbl_motion_clock.pack()
+
+        # Delay clock
+        dly_col = tk.Frame(clock_row, bg=CARD)
+        dly_col.pack(side="left", padx=(0,16))
+        tk.Label(dly_col, text="DELAY",
+                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+        self.lbl_delay_clock = tk.Label(dly_col, text="0.00s",
+                 font=("Courier New",16,"bold"), fg=YELLOW, bg=CARD)
+        self.lbl_delay_clock.pack()
+
+        # Phase indicator
+        ph_col = tk.Frame(clock_row, bg=CARD)
+        ph_col.pack(side="left")
+        tk.Label(ph_col, text="PHASE",
+                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+        self.lbl_phase = tk.Label(ph_col, text="IDLE",
+                 font=("Courier New",12,"bold"), fg=MUTED, bg=CARD)
+        self.lbl_phase.pack()
+
+        # Timing log (last 5 steps)
+        tk.Label(sw_card, text="LAST STEPS  (motion → delay)",
+                 font=("Courier New",6), fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=10)
+        self.timing_log_frame = tk.Frame(sw_card, bg=CARD)
+        self.timing_log_frame.pack(fill="x", padx=10, pady=(2,6))
+        self._timing_row_lbls = []
+        for _ in range(5):
+            lbl = tk.Label(self.timing_log_frame, text="",
+                           font=("Courier New",7), fg=MUTED, bg=CARD,
+                           anchor="w")
+            lbl.pack(fill="x")
+            self._timing_row_lbls.append(lbl)
+
+        # RIGHT: Live motor position monitor
+        pos_card = tk.Frame(instruments_row, bg=CARD,
+                            highlightbackground=BORDER, highlightthickness=1)
+        pos_card.pack(side="right", fill="both", expand=True, padx=(6,0))
+
+        tk.Label(pos_card, text="📍  LIVE MOTOR POSITIONS",
+                 font=("Courier New",7,"bold"), fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(6,4))
+
+        # 6 compact motor readout rows
+        self._pos_bars   = []   # (canvas, bar_item) for angle arc
+        self._pos_labels = []   # current angle label
+        self._tgt_labels = []   # target angle label
+        self._vel_labels = []   # velocity label
+
+        pos_grid = tk.Frame(pos_card, bg=CARD)
+        pos_grid.pack(fill="x", padx=10, pady=(0,6))
+
+        for i in range(6):
+            color = JCOLORS[i]
+            row = tk.Frame(pos_grid, bg=CARD)
+            row.pack(fill="x", pady=1)
+
+            # Joint label
+            tk.Label(row, text=f"J{i+1}", font=("Courier New",9,"bold"),
+                     fg=color, bg=CARD, width=3).pack(side="left")
+            tk.Label(row, text=JNAMES[i][:5], font=("Courier New",7),
+                     fg=MUTED, bg=CARD, width=6).pack(side="left")
+
+            # Mini arc gauge (canvas-drawn)
+            c = tk.Canvas(row, width=44, height=22, bg=CARD,
+                          highlightthickness=0)
+            c.pack(side="left", padx=4)
+            # Track arc (grey)
+            c.create_arc(4, 2, 40, 38, start=0, extent=180,
+                         style="arc", outline=INPUT, width=3)
+            # Value arc (colored) — will be updated
+            bar = c.create_arc(4, 2, 40, 38, start=0, extent=0,
+                               style="arc", outline=color, width=3)
+            self._pos_bars.append((c, bar, color))
+
+            # Current angle — big number
+            pos_lbl = tk.Label(row, text="  0.0°",
+                               font=("Courier New",10,"bold"),
+                               fg=color, bg=CARD, width=8)
+            pos_lbl.pack(side="left")
+            self._pos_labels.append(pos_lbl)
+
+            # Target angle
+            tk.Label(row, text="→", font=("Courier New",8),
+                     fg=MUTED, bg=CARD).pack(side="left")
+            tgt_lbl = tk.Label(row, text="  0.0°",
+                               font=("Courier New",9),
+                               fg=MUTED, bg=CARD, width=7)
+            tgt_lbl.pack(side="left")
+            self._tgt_labels.append(tgt_lbl)
+
+            # Velocity
+            vel_lbl = tk.Label(row, text="0°/s",
+                               font=("Courier New",8),
+                               fg=MUTED, bg=CARD, width=8)
+            vel_lbl.pack(side="left", padx=(6,0))
+
+            self._vel_labels.append(vel_lbl)
+
         # ── Step preview table ────────────────────────────────────────────────
         tbl_frame = tk.Frame(self, bg=BG)
         tbl_frame.pack(fill="both", expand=True, padx=16, pady=(0,8))
@@ -582,6 +732,94 @@ class CsvTab(tk.Frame):
                 except:
                     pass
 
+    # ── Stopwatch ─────────────────────────────────────────────────────────────
+
+    def _start_stopwatch(self):
+        self._seq_start_time = time.time()
+        self._stopwatch_job  = self.after(100, self._tick_stopwatch)
+
+    def _stop_stopwatch(self):
+        if self._stopwatch_job:
+            self.after_cancel(self._stopwatch_job)
+            self._stopwatch_job = None
+        self._set_phase("idle")
+
+    def _tick_stopwatch(self):
+        """Updates all clock labels every 100 ms."""
+        now = time.time()
+
+        # Total sequence elapsed
+        total = now - self._seq_start_time
+        mins  = int(total // 60)
+        secs  = total % 60
+        self.lbl_seq_clock.config(text=f"{mins:02d}:{secs:04.1f}")
+
+        # Phase-specific clocks
+        if self._phase == "motion":
+            elapsed = now - self._step_start_time
+            self.lbl_motion_clock.config(text=f"{elapsed:.2f}s", fg=BLUE)
+        elif self._phase == "delay":
+            elapsed = now - self._delay_start_time
+            self.lbl_delay_clock.config(text=f"{elapsed:.2f}s", fg=YELLOW)
+
+        self._stopwatch_job = self.after(100, self._tick_stopwatch)
+
+    def _set_phase(self, phase: str, step_label: str = ""):
+        """Switch the phase indicator. phase = 'motion' | 'delay' | 'idle'"""
+        self._phase = phase
+        colors = {"motion": BLUE, "delay": YELLOW, "idle": MUTED}
+        labels = {"motion": "▶ MOTION", "delay": "⏳ DELAY", "idle": "◼ IDLE"}
+        self.after(0, self.lbl_phase.config,
+                   {"text": labels.get(phase, "IDLE"),
+                    "fg":   colors.get(phase, MUTED)})
+
+    def _record_timing(self, label: str, motion_s: float, delay_s: float):
+        """Record completed step timing and update the timing log display."""
+        self._timing_log.append((label, motion_s, delay_s))
+        # Keep only the last 5
+        recent = self._timing_log[-5:]
+        def update():
+            for i, lbl_widget in enumerate(self._timing_row_lbls):
+                if i < len(recent):
+                    lbl, ms, ds = recent[i]
+                    lbl_widget.config(
+                        text=f"  {lbl[:16]:<16}  motion {ms:.2f}s   delay {ds:.2f}s",
+                        fg=TEXT)
+                else:
+                    lbl_widget.config(text="")
+        self.after(0, update)
+
+    # ── Live position monitor update (called by main monitor tick) ────────────
+
+    def update_positions(self, motor_id: int, pos: float, vel: float,
+                         target: float = None):
+        """
+        Update the live position panel for one motor.
+        Called from the main app's monitor tick.
+        """
+        i = motor_id - 1
+        if not (0 <= i < 6):
+            return
+
+        cfg   = DEFAULT_JOINT_CONFIG[i]
+        rng   = cfg.max_deg - cfg.min_deg         # total range in degrees
+        ratio = (pos - cfg.min_deg) / rng if rng != 0 else 0
+        ratio = max(0.0, min(1.0, ratio))
+        extent = ratio * 180.0                     # arc sweeps 180°
+
+        c, bar, color = self._pos_bars[i]
+        c.itemconfig(bar, extent=extent)
+
+        self._pos_labels[i].config(text=f"{pos:+.1f}°")
+        self._vel_labels[i].config(
+            text=f"{vel:+.0f}°/s",
+            fg=BLUE if abs(vel) > 1 else MUTED)
+
+        if target is not None:
+            self._tgt_labels[i].config(
+                text=f"{target:+.1f}°",
+                fg=GREEN if abs(pos - target) < 2.0 else ORANGE)
+
     # ── File loading ──────────────────────────────────────────────────────────
 
     def _browse(self):
@@ -657,10 +895,18 @@ class CsvTab(tk.Frame):
         self._running    = True
         self._paused     = False
         self._abort_flag.clear()
+        self._timing_log.clear()
         self.btn_run.config(state="disabled")
         self.btn_pause.config(state="normal", text="⏸  PAUSE")
         self.btn_abort.config(state="normal")
         self.progress_var.set(0)
+        # Reset clocks
+        self.lbl_motion_clock.config(text="0.00s")
+        self.lbl_delay_clock.config(text="0.00s")
+        self.lbl_seq_clock.config(text="00:00.0")
+        for lbl in self._timing_row_lbls:
+            lbl.config(text="")
+        self._start_stopwatch()
 
         threading.Thread(target=self._sequence_worker,
                          args=(robot,), daemon=True).start()
@@ -677,19 +923,18 @@ class CsvTab(tk.Frame):
                 f"[CSV] ── Starting sequence (run #{run_count}) ──"))
 
             for idx, step in enumerate(self._steps):
-                # Abort check
                 if self._abort_flag.is_set():
                     self.after(0, self._on_sequence_done, "Aborted.")
                     return
 
-                # Pause check — block here until unpaused
                 while self._paused:
                     if self._abort_flag.is_set():
                         self.after(0, self._on_sequence_done, "Aborted.")
                         return
                     time.sleep(0.1)
 
-                # Highlight row and update status
+                # Highlight row + update status
+                self._current_step = idx
                 self.after(0, self._highlight_row, idx)
                 pct = (idx / total) * 100
                 self.after(0, lambda p=pct: self.progress_var.set(p))
@@ -708,7 +953,11 @@ class CsvTab(tk.Frame):
                     self.after(0, lambda msg=f"[CSV] Step {idx+1} — {step.step_label}: (delay only)":
                                self._log(msg))
 
-                # Send motion commands (non-blocking)
+                # ── MOTION PHASE ──────────────────────────────────────────────
+                self._step_start_time = time.time()
+                self._set_phase("motion", step.step_label)
+                self.after(0, self.lbl_motion_clock.config, {"text": "0.00s"})
+
                 for motor_id, angle, speed in motors:
                     robot.motors[motor_id].set_position(
                         position_deg=angle,
@@ -716,11 +965,9 @@ class CsvTab(tk.Frame):
                         wait=False)
                     time.sleep(0.001)
 
-                # Wait for motion to finish if requested
                 if self._wait_var.get() and motors:
-                    # Poll until all commanded motors reach their targets
-                    deadline = time.time() + 20.0  # 20s max per step
-                    tol = 2.0  # degrees
+                    deadline = time.time() + 20.0
+                    tol = 2.0
                     while time.time() < deadline:
                         if self._abort_flag.is_set():
                             break
@@ -728,20 +975,28 @@ class CsvTab(tk.Frame):
                             time.sleep(0.1)
                         arrived = all(
                             abs(robot.motors[mid].get_position() - ang) < tol
-                            for mid, ang, _ in motors
-                        )
+                            for mid, ang, _ in motors)
                         if arrived:
                             break
                         time.sleep(0.1)
 
-                # Inter-step delay
+                motion_duration = time.time() - self._step_start_time
+                self.after(0, self.lbl_motion_clock.config,
+                           {"text": f"{motion_duration:.2f}s", "fg": GREEN})
+
+                # ── DELAY PHASE ───────────────────────────────────────────────
                 try:
                     gui_delay = float(self._delay_var.get())
                 except ValueError:
                     gui_delay = 0.0
 
                 delay = gui_delay if gui_delay > 0 else step.delay_s
+
                 if delay > 0:
+                    self._delay_start_time = time.time()
+                    self._set_phase("delay", step.step_label)
+                    self.after(0, self.lbl_delay_clock.config, {"text": "0.00s"})
+
                     t0 = time.time()
                     while time.time() - t0 < delay:
                         if self._abort_flag.is_set():
@@ -751,9 +1006,22 @@ class CsvTab(tk.Frame):
                             time.sleep(0.05)
                         time.sleep(0.05)
 
-            # Sequence complete — loop or finish
+                    actual_delay = time.time() - self._delay_start_time
+                    self.after(0, self.lbl_delay_clock.config,
+                               {"text": f"{actual_delay:.2f}s", "fg": YELLOW})
+                else:
+                    actual_delay = 0.0
+
+                # Record timing for the log
+                self._record_timing(step.step_label, motion_duration, actual_delay)
+                self.after(0, lambda msg=
+                    f"[CSV] ✓ {step.step_label}: motion {motion_duration:.2f}s  delay {actual_delay:.2f}s":
+                    self._log(msg))
+
+            # Sequence complete
             self.after(0, self.progress_var.set, 100)
             self.after(0, self._clear_highlight)
+            self._set_phase("idle")
 
             if not loop or self._abort_flag.is_set():
                 break
@@ -767,6 +1035,7 @@ class CsvTab(tk.Frame):
     def _on_sequence_done(self, msg):
         self._running = False
         self._paused  = False
+        self._stop_stopwatch()
         self.btn_run.config(state="normal")
         self.btn_pause.config(state="disabled", text="⏸  PAUSE")
         self.btn_abort.config(state="disabled")
@@ -810,7 +1079,9 @@ class RobotGUI(tk.Tk):
         self.robot: Optional[RobotController] = None
         self.bus:   Optional[CANBus]          = None
         self._connected   = False
-        self._monitor_job = None
+        self._monitor_running = False
+        self._latest_feedback = {}
+        self._ui_update_job = None
 
         handler = QueueHandler()
         handler.setFormatter(logging.Formatter(
@@ -1037,24 +1308,57 @@ class RobotGUI(tk.Tk):
         self.btn_disconnect.config(state="disabled", bg=INPUT, fg=MUTED)
         self._log_msg("Disconnected.")
 
-    # ── Live feedback monitor ─────────────────────────────────────────────────
+    # ── Live feedback monitor (Decoupled & Thread-Safe) ───────────────────────
 
     def _start_monitor(self):
-        self._monitor_job = self.after(200, self._monitor_tick)
+        self._monitor_running = True
+        self._latest_feedback = {}
+        
+        # 1. Start a background thread just to fetch CAN data safely
+        threading.Thread(target=self._hardware_poll_loop, daemon=True).start()
+        
+        # 2. Start the UI loop to draw the screen
+        self._ui_update_job = self.after(100, self._ui_update_tick)
+
+    def _hardware_poll_loop(self):
+        """Invisibly fetches data 20 times a second without freezing the UI."""
+        while self._monitor_running:
+            if self.robot and self._connected:
+                try:
+                    self._latest_feedback = self.robot.get_all_feedback()
+                except Exception:
+                    pass
+            time.sleep(0.05) 
 
     def _stop_monitor(self):
-        if self._monitor_job:
-            self.after_cancel(self._monitor_job)
-            self._monitor_job = None
+        self._monitor_running = False
+        if getattr(self, '_ui_update_job', None):
+            self.after_cancel(self._ui_update_job)
+            self._ui_update_job = None
 
-    def _monitor_tick(self):
-        if self.robot and self._connected:
-            fb_all = self.robot.get_all_feedback()
-            for motor_id, fb in fb_all.items():
+    def _ui_update_tick(self):
+        """Runs on the Main Thread. Only updates the text on the screen."""
+        if self.robot and self._connected and self._latest_feedback:
+            for motor_id, fb in self._latest_feedback.items():
+                
+                # Update Manual tab cards
                 self._manual_tab.update_feedback(
                     motor_id, fb.position_deg, fb.velocity_dps,
                     fb.current_a, fb.temperature_c)
-            self._monitor_job = self.after(200, self._monitor_tick)
+                
+                # Update CSV tab live position monitor
+                target = None
+                if self._csv_tab._running and self._csv_tab._steps:
+                    idx = self._csv_tab._current_step
+                    if 0 <= idx < len(self._csv_tab._steps):
+                        j = self._csv_tab._steps[idx].joints[motor_id - 1]
+                        if j is not None:
+                            target = j[0]
+                            
+                self._csv_tab.update_positions(
+                    motor_id, fb.position_deg, fb.velocity_dps, target)
+                    
+        self._ui_update_job = self.after(100, self._ui_update_tick)
 
     # ── Log ───────────────────────────────────────────────────────────────────
 
