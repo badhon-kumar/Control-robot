@@ -186,7 +186,7 @@ class JointCard(tk.Frame):
 
         tr = tk.Frame(self, bg=CARD)
         tr.pack(fill="x", padx=12, pady=(10,4))
-        tk.Label(tr, text=f"J{self.cfg.motor_id}", font=("Courier New",18,"bold"),
+        tk.Label(tr, text=f"Motor {self.cfg.motor_id}", font=("Courier New",16,"bold"),
                  fg=self.color, bg=CARD).pack(side="left")
         tk.Label(tr, text=self.cfg.name.upper(), font=("Courier New",9),
                  fg=MUTED, bg=CARD).pack(side="left", padx=(8,0), pady=(6,0))
@@ -200,7 +200,7 @@ class JointCard(tk.Frame):
 
         sf = tk.Frame(self, bg=CARD)
         sf.pack(fill="x", padx=12, pady=(8,2))
-        tk.Label(sf, text="TARGET POSITION", font=("Courier New",7),
+        tk.Label(sf, text="TARGET POSITION", font=("Courier New",9),
                  fg=MUTED, bg=CARD).pack(anchor="w")
 
         self.slider_var = tk.DoubleVar(value=0.0)
@@ -214,18 +214,18 @@ class JointCard(tk.Frame):
         vr = tk.Frame(sf, bg=CARD)
         vr.pack(fill="x")
         tk.Label(vr, text=f"{self.cfg.min_deg:.0f}°",
-                 font=("Courier New",7), fg=MUTED, bg=CARD).pack(side="left")
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack(side="left")
         self.lbl_val = tk.Label(vr, text="0.0°",
                  font=("Courier New",9,"bold"), fg=self.color, bg=CARD)
         self.lbl_val.pack(side="left", expand=True)
         tk.Label(vr, text=f"{self.cfg.max_deg:.0f}°",
-                 font=("Courier New",7), fg=MUTED, bg=CARD).pack(side="right")
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack(side="right")
         self.slider_var.trace_add("write",
             lambda *_: self.lbl_val.config(text=f"{self.slider_var.get():.1f}°"))
 
         sr = tk.Frame(self, bg=CARD)
         sr.pack(fill="x", padx=12, pady=2)
-        tk.Label(sr, text="SPEED  °/s", font=("Courier New",7),
+        tk.Label(sr, text="SPEED  °/s", font=("Courier New",9),
                  fg=MUTED, bg=CARD).pack(side="left")
         self.speed_var = tk.StringVar(value=str(int(self.cfg.max_speed_dps)))
         tk.Entry(sr, textvariable=self.speed_var, width=6,
@@ -250,8 +250,8 @@ class JointCard(tk.Frame):
     def _stat(self, parent, tag, val):
         f = tk.Frame(parent, bg=CARD)
         f.pack(side="left", expand=True)
-        tk.Label(f, text=tag, font=("Courier New",6), fg=MUTED, bg=CARD).pack()
-        lbl = tk.Label(f, text=val, font=("Courier New",9,"bold"),
+        tk.Label(f, text=tag, font=("Courier New",9), fg=MUTED, bg=CARD).pack()
+        lbl = tk.Label(f, text=val, font=("Courier New",11,"bold"),
                        fg=TEXT, bg=CARD)
         lbl.pack()
         return lbl
@@ -289,7 +289,7 @@ class ManualTab(tk.Frame):
         # Global control buttons
         ctrl = tk.Frame(self, bg=BG, pady=8)
         ctrl.pack(fill="x", padx=16)
-        tk.Label(ctrl, text="GLOBAL:", font=("Courier New",7),
+        tk.Label(ctrl, text="GLOBAL:", font=("Courier New",9),
                  fg=MUTED, bg=BG).pack(side="left", padx=(0,10))
         for txt, color, fg, cmd in [
             ("HOME ALL",     ACCENT,  BG,   self._home),
@@ -298,7 +298,7 @@ class ManualTab(tk.Frame):
             ("⚠ E-STOP",     RED,     TEXT, self._estop),
             ("RESET E-STOP", INPUT,   TEXT, self._reset),
         ]:
-            tk.Button(ctrl, text=txt, font=("Courier New",9,"bold"),
+            tk.Button(ctrl, text=txt, font=("Courier New",10,"bold"),
                       bg=color, fg=fg, relief="flat", cursor="hand2",
                       padx=10, pady=4, command=cmd).pack(side="left", padx=4)
 
@@ -416,7 +416,7 @@ class CsvTab(tk.Frame):
         file_card.pack(fill="x", padx=16, pady=(12,6))
 
         tk.Label(file_card, text="CSV SEQUENCE FILE",
-                 font=("Courier New",7), fg=MUTED, bg=CARD).pack(
+                 font=("Courier New",10), fg=MUTED, bg=CARD).pack(
                      anchor="w", padx=12, pady=(8,4))
 
         fr = tk.Frame(file_card, bg=CARD)
@@ -454,7 +454,7 @@ class CsvTab(tk.Frame):
                  ).pack(side="left", padx=(4,20))
 
         tk.Label(opt, text="(overrides per-step delay from CSV — set 0 to use CSV values)",
-                 font=("Courier New",7), fg=MUTED, bg=BG).pack(side="left", padx=(0,20))
+                 font=("Courier New",9), fg=MUTED, bg=BG).pack(side="left", padx=(0,20))
 
         tk.Checkbutton(opt, text="Wait for motion to finish before next step",
                        variable=self._wait_var,
@@ -517,7 +517,7 @@ class CsvTab(tk.Frame):
         sw_card.pack(side="left", fill="both", expand=True, padx=(0,6))
 
         tk.Label(sw_card, text="⏱  STOPWATCH  &  TIMING",
-                 font=("Courier New",7,"bold"), fg=MUTED, bg=CARD
+                 font=("Courier New",10,"bold"), fg=MUTED, bg=CARD
                  ).pack(anchor="w", padx=10, pady=(6,2))
 
         # Big elapsed time display
@@ -528,7 +528,7 @@ class CsvTab(tk.Frame):
         seq_col = tk.Frame(clock_row, bg=CARD)
         seq_col.pack(side="left", padx=(0,20))
         tk.Label(seq_col, text="SEQUENCE TOTAL",
-                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack()
         self.lbl_seq_clock = tk.Label(seq_col, text="00:00.0",
                  font=("Courier New",22,"bold"), fg=ACCENT, bg=CARD)
         self.lbl_seq_clock.pack()
@@ -537,7 +537,7 @@ class CsvTab(tk.Frame):
         mot_col = tk.Frame(clock_row, bg=CARD)
         mot_col.pack(side="left", padx=(0,16))
         tk.Label(mot_col, text="MOTION",
-                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack()
         self.lbl_motion_clock = tk.Label(mot_col, text="0.00s",
                  font=("Courier New",16,"bold"), fg=BLUE, bg=CARD)
         self.lbl_motion_clock.pack()
@@ -546,7 +546,7 @@ class CsvTab(tk.Frame):
         dly_col = tk.Frame(clock_row, bg=CARD)
         dly_col.pack(side="left", padx=(0,16))
         tk.Label(dly_col, text="DELAY",
-                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack()
         self.lbl_delay_clock = tk.Label(dly_col, text="0.00s",
                  font=("Courier New",16,"bold"), fg=YELLOW, bg=CARD)
         self.lbl_delay_clock.pack()
@@ -555,21 +555,21 @@ class CsvTab(tk.Frame):
         ph_col = tk.Frame(clock_row, bg=CARD)
         ph_col.pack(side="left")
         tk.Label(ph_col, text="PHASE",
-                 font=("Courier New",6), fg=MUTED, bg=CARD).pack()
+                 font=("Courier New",9), fg=MUTED, bg=CARD).pack()
         self.lbl_phase = tk.Label(ph_col, text="IDLE",
                  font=("Courier New",12,"bold"), fg=MUTED, bg=CARD)
         self.lbl_phase.pack()
 
         # Timing log (last 5 steps)
         tk.Label(sw_card, text="LAST STEPS  (motion → delay)",
-                 font=("Courier New",6), fg=MUTED, bg=CARD
+                 font=("Courier New",9), fg=MUTED, bg=CARD
                  ).pack(anchor="w", padx=10)
         self.timing_log_frame = tk.Frame(sw_card, bg=CARD)
         self.timing_log_frame.pack(fill="x", padx=10, pady=(2,6))
         self._timing_row_lbls = []
         for _ in range(5):
             lbl = tk.Label(self.timing_log_frame, text="",
-                           font=("Courier New",7), fg=MUTED, bg=CARD,
+                           font=("Courier New",9), fg=MUTED, bg=CARD,
                            anchor="w")
             lbl.pack(fill="x")
             self._timing_row_lbls.append(lbl)
@@ -580,7 +580,7 @@ class CsvTab(tk.Frame):
         pos_card.pack(side="right", fill="both", expand=True, padx=(6,0))
 
         tk.Label(pos_card, text="📍  LIVE MOTOR POSITIONS",
-                 font=("Courier New",7,"bold"), fg=MUTED, bg=CARD
+                 font=("Courier New",10,"bold"), fg=MUTED, bg=CARD
                  ).pack(anchor="w", padx=10, pady=(6,4))
 
         # 6 compact motor readout rows
@@ -598,10 +598,10 @@ class CsvTab(tk.Frame):
             row.pack(fill="x", pady=1)
 
             # Joint label
-            tk.Label(row, text=f"J{i+1}", font=("Courier New",9,"bold"),
-                     fg=color, bg=CARD, width=3).pack(side="left")
-            tk.Label(row, text=JNAMES[i][:5], font=("Courier New",7),
-                     fg=MUTED, bg=CARD, width=6).pack(side="left")
+            tk.Label(row, text=f"Motor{i+1}", font=("Courier New",9,"bold"),
+                     fg=color, bg=CARD, width=7).pack(side="left")
+            tk.Label(row, text=JNAMES[i][:5], font=("Courier New",9),
+                     fg=MUTED, bg=CARD, width=7).pack(side="left")
 
             # Mini arc gauge (canvas-drawn)
             c = tk.Canvas(row, width=44, height=22, bg=CARD,
@@ -644,7 +644,7 @@ class CsvTab(tk.Frame):
         tbl_frame.pack(fill="both", expand=True, padx=16, pady=(0,8))
 
         tk.Label(tbl_frame, text="SEQUENCE PREVIEW",
-                 font=("Courier New",7), fg=MUTED, bg=BG).pack(anchor="w", pady=(0,4))
+                 font=("Courier New",10), fg=MUTED, bg=BG).pack(anchor="w", pady=(0,4))
 
         # Scrollable canvas for the table
         canvas = tk.Canvas(tbl_frame, bg=CARD, highlightthickness=0)
@@ -669,9 +669,9 @@ class CsvTab(tk.Frame):
         hdr.pack(fill="x")
         cols = [("#", 3), ("Label", 14), ("Delay", 6)]
         for i in range(6):
-            cols.append((f"J{i+1} {JNAMES[i][:4]}", 13))
+            cols.append((f"Motor{i+1} {JNAMES[i][:4]}", 13))
         for txt, w in cols:
-            tk.Label(hdr, text=txt, font=("Courier New",7,"bold"),
+            tk.Label(hdr, text=txt, font=("Courier New",9,"bold"),
                      fg=MUTED, bg=PANEL, width=w, anchor="w"
                      ).pack(side="left", padx=2, pady=3)
 
@@ -945,7 +945,7 @@ class CsvTab(tk.Frame):
                 # Log the step
                 motors = step.motors_to_move()
                 if motors:
-                    parts = ", ".join(f"J{m}→{a:+.0f}°@{s:.0f}°/s"
+                    parts = ", ".join(f"Motor{m}→{a:+.0f}°@{s:.0f}°/s"
                                       for m, a, s in motors)
                     self.after(0, lambda msg=f"[CSV] Step {idx+1} — {step.step_label}: {parts}":
                                self._log(msg))
@@ -1117,7 +1117,7 @@ class RobotGUI(tk.Tk):
         inner = tk.Frame(conn, bg=PANEL)
         inner.pack(padx=20)
 
-        tk.Label(inner, text="MODE", font=("Courier New",7),
+        tk.Label(inner, text="MODE", font=("Courier New",9),
                  fg=MUTED, bg=PANEL).grid(row=0, column=0, sticky="w")
         self.mode_var = tk.StringVar(value="Simulation")
         mode_cb = ttk.Combobox(inner, textvariable=self.mode_var,
@@ -1127,7 +1127,7 @@ class RobotGUI(tk.Tk):
         mode_cb.grid(row=1, column=0, padx=(0,12))
         mode_cb.bind("<<ComboboxSelected>>", self._on_mode_change)
 
-        tk.Label(inner, text="PORT", font=("Courier New",7),
+        tk.Label(inner, text="PORT", font=("Courier New",9),
                  fg=MUTED, bg=PANEL).grid(row=0, column=1, sticky="w")
         self.port_var = tk.StringVar(value="COM3")
         self.port_entry = tk.Entry(inner, textvariable=self.port_var, width=14,
@@ -1137,7 +1137,7 @@ class RobotGUI(tk.Tk):
                                    state="disabled")
         self.port_entry.grid(row=1, column=1, padx=(0,12))
 
-        tk.Label(inner, text="BUS TYPE", font=("Courier New",7),
+        tk.Label(inner, text="BUS TYPE", font=("Courier New",9),
                  fg=MUTED, bg=PANEL).grid(row=0, column=2, sticky="w")
         self.bustype_var = tk.StringVar(value="slcan")
         self.bustype_cb = ttk.Combobox(inner, textvariable=self.bustype_var,
@@ -1146,7 +1146,7 @@ class RobotGUI(tk.Tk):
                                        font=("Courier New",9))
         self.bustype_cb.grid(row=1, column=2, padx=(0,12))
 
-        tk.Label(inner, text="BITRATE", font=("Courier New",7),
+        tk.Label(inner, text="BITRATE", font=("Courier New",9),
                  fg=MUTED, bg=PANEL).grid(row=0, column=3, sticky="w")
         self.bitrate_var = tk.StringVar(value="1000000")
         self.bitrate_cb = ttk.Combobox(inner, textvariable=self.bitrate_var,
@@ -1207,9 +1207,9 @@ class RobotGUI(tk.Tk):
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
         lh = tk.Frame(self, bg=PANEL)
         lh.pack(fill="x")
-        tk.Label(lh, text="SYSTEM LOG", font=("Courier New",7),
+        tk.Label(lh, text="SYSTEM LOG", font=("Courier New",9),
                  fg=MUTED, bg=PANEL, pady=4).pack(side="left", padx=12)
-        tk.Button(lh, text="CLEAR", font=("Courier New",7),
+        tk.Button(lh, text="CLEAR", font=("Courier New",9),
                   bg=PANEL, fg=MUTED, relief="flat", cursor="hand2",
                   command=self._clear_log).pack(side="right", padx=12)
 

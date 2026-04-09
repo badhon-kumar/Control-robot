@@ -20,13 +20,22 @@
 A complete power supply and control system was designed to operate six MyActuator RMD-X8-120 (48V) motors without the use of a battery bank. The system converts AC mains power into regulated DC power and distributes it safely to each motor while enabling synchronized control via a communication network.
 
 \subsection{Power Supply Design}
-The system is powered from a 220V AC mains source. Based on an estimated load of approximately 600 W per motor, the total power requirement is:
+The system is powered from a 110V AC mains source. Based on an estimated peak load of approximately 600 W per motor, the theoretical maximum power requirement is:
 
 \begin{equation}
 P_{total} = 6 \times 600 = 3600 \text{ W}
 \end{equation}
 
-Including a safety margin, the required power capacity is approximately 4.5 kW. To meet this demand, three 48V, 40A AC-DC power supplies are connected in parallel. This modular configuration improves reliability, thermal performance, and ease of maintenance. The selected AC-DC power supplies must feature active current sharing (or parallel function) to ensure the load is balanced equally across all three units.
+\noindent
+At 110V, a 3600W load draws approximately 32.7A, which significantly exceeds the 15A to 20A capacity of a standard 110V wall outlet. To prevent tripping the facility's circuit breakers under maximum load, a dual-mitigation strategy is implemented:
+
+\begin{itemize}
+    \item \textbf{Hardware Mitigation (Dual-Circuit Routing):} To safely supply the necessary current, the AC-DC power supplies are split across two separate AC input cables. These cables must be plugged into receptacles that reside on completely independent 20A electrical breakers, effectively dividing the 40A load into two manageable 20A circuits.
+    \item \textbf{Software Mitigation (Active Current Clamping):} To ensure the system can safely operate even if restricted to a single 15A circuit, the central CAN controller dynamically clamps the \texttt{max\_current} command sent to the motor drivers. By mathematically limiting the simultaneous acceleration current in software, the robot's physical acceleration is slightly reduced, but the total power draw is strictly restricted to remain under 1650W (15A).
+\end{itemize}
+
+\noindent
+This modular configuration improves reliability, thermal performance, and ease of maintenance. The selected 48V AC-DC power supplies feature active current sharing (parallel function) to ensure the load is balanced equally across all units.
 
 \subsection{Power Distribution}
 The DC outputs from the power supplies are connected to a common DC busbar. Power is distributed from the busbar to each motor through individual protection elements. Each motor line includes:
@@ -48,54 +57,8 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
     \item Continuous operation without battery dependency
     \item Modular and scalable power design
     \item Robust and noise-resistant CAN communication
-    \item Enhanced safety through protection components
+    \item Enhanced safety through dual-circuit routing and active current clamping
 \end{itemize}
-
-% \begin{figure}[H] % Changed to [H] to prevent it from floating
-% \centering
-% \begin{tikzpicture}[node distance=2.2cm, auto]
-
-% \tikzstyle{block} = [rectangle, draw, text width=3cm, text centered, rounded corners, minimum height=1cm]
-% \tikzstyle{motor} = [rectangle, draw, text width=1.5cm, text centered, rounded corners, minimum height=1cm] % Narrower style for motors
-% \tikzstyle{line} = [draw, -latex]
-
-% \node [block] (ac) {AC Mains\\220V};
-% \node [block, below of=ac, node distance=1.5cm] (cb) {Circuit Breaker};
-
-% \node [block, below left of=cb, xshift=-1.5cm, node distance=2cm] (psu1) {48V PSU\\40A};
-% \node [block, below of=cb, node distance=2cm] (psu2) {48V PSU\\40A};
-% \node [block, below right of=cb, xshift=1.5cm, node distance=2cm] (psu3) {48V PSU\\40A};
-
-% \node [block, below of=psu2, node distance=2cm] (bus) {DC Busbar};
-
-% % Applied motor style and fixed xshift spread
-% \node [motor, below of=bus, xshift=-5.5cm, node distance=2cm] (m1) {Motor 1};
-% \node [motor, right of=m1] (m2) {Motor 2};
-% \node [motor, right of=m2] (m3) {Motor 3};
-% \node [motor, right of=m3] (m4) {Motor 4};
-% \node [motor, right of=m4] (m5) {Motor 5};
-% \node [motor, right of=m5] (m6) {Motor 6};
-
-% % Lines
-% \path [line] (ac) -- (cb);
-% \path [line] (cb) -- (psu1);
-% \path [line] (cb) -- (psu2);
-% \path [line] (cb) -- (psu3);
-
-% \path [line] (psu1) -- (bus);
-% \path [line] (psu2) -- (bus);
-% \path [line] (psu3) -- (bus);
-
-% \path [line] (bus) -- (m1);
-% \path [line] (bus) -- (m2);
-% \path [line] (bus) -- (m3);
-% \path [line] (bus) -- (m4);
-% \path [line] (bus) -- (m5);
-% \path [line] (bus) -- (m6);
-
-% \end{tikzpicture}
-% \caption{Power distribution architecture for six 48V motors}
-% \end{figure}
 
 \begin{figure}[H]
 \centering
@@ -111,8 +74,8 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
 ]
 
 % 1. Power Architecture (Center Column)
-\node[block] (ac) {AC Mains\\220V};
-\node[block, below=0.8cm of ac] (cb) {Circuit Breaker};
+\node[block] (ac) {AC Mains\\110V};
+\node[block, below=0.8cm of ac] (cb) {Dual Circuit\\Breakers};
 
 \node[block, below=1cm of cb] (psu2) {48V PSU\\40A};
 \node[block, left=0.8cm of psu2] (psu1) {48V PSU\\40A};
@@ -168,7 +131,7 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
 \subsection*{ Power}
 \begin{itemize}
     \item 48V DC Power Supply (total $\sim$4.5 kW)
-    \item AC input cable
+    \item AC input cables (x2 for dual-circuit routing)
     \item Circuit breaker (AC side)
 \end{itemize}
 
@@ -210,84 +173,17 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
     \item Braking resistor module (48V compatible)
 \end{itemize}
 
-
-
-
-
-
 \subsection{Design Justification}
 
 A parallel power supply configuration was selected to enhance system reliability and scalability. Instead of relying on a single high-power unit, multiple lower-rated supplies distribute the thermal and electrical load, reducing the risk of total system failure.
 
+\noindent
 The use of a CAN-based communication network ensures robust and noise-resistant control, which is essential in high-current environments. Additionally, the elimination of a battery bank reduces maintenance requirements and improves long-term operational stability.
 
+\noindent
 The inclusion of protection elements such as circuit breakers and individual fuses ensures safe operation under fault conditions, making the system suitable for industrial and robotic applications.
 
-
 \section{Practical Design and Hardware choice}
-
-% \begin{figure}[H]
-% \centering
-% \begin{tikzpicture}[
-%     component/.style={rectangle, draw, rounded corners, align=center, minimum width=3cm, minimum height=1.2cm, fill=white, thick},
-%     battery/.style={rectangle, draw=black, thick, rounded corners, align=center, minimum width=4.5cm, minimum height=1.5cm, fill=gray!10},
-%     busbar/.style={rectangle, draw=black, thick, fill=gray!20, minimum width=6cm, minimum height=1.0cm, align=center},
-%     smallnode/.style={rectangle, draw, align=center, minimum width=1.2cm, minimum height=0.7cm, font=\small},
-%     line/.style={draw, thick, -latex},
-%     heavyline/.style={draw, line width=1.5pt, -latex}
-% ]
-
-% % Components Outside - Top (Power Generation & Storage)
-% \node[component] (ac) at (0, 7.5) {AC Mains\\(220V)};
-% \node[component] (psu) at (0, 5.5) {1200W PSU\\(Trickle Charger)};
-% \node[battery] (bat) at (0, 3.5) {Economi 48V 300Ah\\LiFePO4 Battery};
-% \node[component] (breaker) at (0, 1.5) {150A Marine\\Breaker};
-
-% % Enclosure Boundary
-% % Widened to prevent motor overlap and increased height to separate components
-% \coordinate (box_tl) at (-4.2, 0.5);
-% \coordinate (box_br) at (4.2, -3.5);
-% \draw[very thick, dotted, rounded corners, fill=blue!5] (box_tl) rectangle (box_br);
-
-% % Moved label to top edge of the box to PREVENT overlapping the center arrow
-% \node[anchor=south west, font=\bfseries] at (-6.2, 0.5) {12"x12"x6" ABS Enclosure};
-
-% % Components Inside the Enclosure
-% \node[busbar] (bus) at (0, -0.6) {600A Busbars\\(Red \& Black)};
-% \node[component] (caps) at (-2.0, -2.2) {4700$\mu$F 63V\\Cap Bank};
-% \node[component] (fusebox) at (2.0, -2.2) {Chatovalo\\6-Way Fuse Box};
-
-% % Actuation - Bottom Row (Spread out by 1.5cm each to prevent overlapping)
-% \node[smallnode] (m1) at (-3.75, -5.5) {Motor 1};
-% \node[smallnode] (m2) at (-2.25, -5.5) {Motor 2};
-% \node[smallnode] (m3) at (-0.75, -5.5) {Motor 3};
-% \node[smallnode] (m4) at (0.75, -5.5) {Motor 4};
-% \node[smallnode] (m5) at (2.25, -5.5) {Motor 5};
-% \node[smallnode] (m6) at (3.75, -5.5) {Motor 6};
-
-% % Power Routing & Connections
-% \path[line] (ac) -- (psu);
-% \path[line] (psu) -- node[right] {Charge} (bat);
-% \path[heavyline] (bat) -- (breaker);
-% \path[heavyline] (breaker) -- (bus);
-
-% \draw[heavyline] (bus.south -| caps.north) -- (caps.north);
-% \draw[heavyline] (bus.south -| fusebox.north) -- (fusebox.north);
-
-% % Branch Circuits (Fuse Box out to Motors)
-% \coordinate (fuse_drop) at (2.0, -4.2);
-% \draw[line, thick] (fusebox.south) -- (fuse_drop);
-
-% \draw[line] (fuse_drop) -| (m1.north);
-% \draw[line] (fuse_drop) -| (m2.north);
-% \draw[line] (fuse_drop) -| (m3.north);
-% \draw[line] (fuse_drop) -| (m4.north);
-% \draw[line] (fuse_drop) -| (m5.north);
-% \draw[line] (fuse_drop) -| (m6.north);
-
-% \end{tikzpicture}
-% \caption{Hardware arrangement and power flow utilizing Amazon components}
-% \end{figure}
 
 \begin{figure}[H]
 \centering
@@ -304,7 +200,7 @@ The inclusion of protection elements such as circuit breakers and individual fus
 ]
 
 % Components Outside - Top
-\node[component] (ac) at (0, 8.5) {AC Mains\\(220V)};
+\node[component] (ac) at (0, 8.5) {AC Mains\\(110V)};
 
 % Four PSUs in Parallel
 \node[component] (psu1) at (-4.5, 6.5) {48V PSU 1};
@@ -392,8 +288,6 @@ The inclusion of protection elements such as circuit breakers and individual fus
 \caption{Detailed electrical routing for a true battery-less system utilizing four parallel power supplies with active current sharing.}
 \end{figure}
 
-
-
 \begin{table}[H]
 \centering
 \caption{System Bill of Materials (BoM)}
@@ -403,13 +297,11 @@ The inclusion of protection elements such as circuit breakers and individual fus
 \hline
 \textbf{Component Name} & \textbf{Purpose / Arrangement} & \textbf{Qty} & \textbf{Unit Price} & \textbf{Total Price} & \textbf{Engineering Notes} \\
 \hline
-% Economi Power 48V 300Ah LiFePO4 Battery & Main power source (16kWh) placed outside the enclosure. & 1 & \$1,639.00 & \$1,639.00 & Can supply heavy burst currents for all 6 motors. \\
-% \hline
-BOSYTRO 48V 25A 1200W Power Supply & AC to DC trickle charger placed outside the enclosure. & 1 & \$64.59 & \$64.59 & Cannot run the robot alone; strictly for charging the battery. \\
+BOSYTRO 48V 25A 1200W Power Supply & AC to DC power supply placed outside the enclosure. & 4 & \$64.59 & \$258.36 & Four units provide ~4800W. Split across two AC circuits. \\
 \hline
-600A Heavy Duty Bus Bar (Red) & Positive distribution manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Accepts the main positive line from the battery/breaker. \\
+600A Heavy Duty Bus Bar (Red) & Positive distribution manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Accepts the main positive line from the breaker. \\
 \hline
-600A Heavy Duty Bus Bar (Black) & Negative return manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Returns all negative motor lines back to the battery. \\
+600A Heavy Duty Bus Bar (Black) & Negative return manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Returns all negative motor lines back to the PSU. \\
 \hline
 12''x12''x6'' ABS Plastic Junction Box & Main IP65 protective enclosure for distribution hardware. & 1 & \$45.99 & \$45.99 & Houses busbars, capacitors, and the fuse box. \\
 \hline
@@ -419,15 +311,12 @@ RED WOLF 150A Marine Circuit Breaker & Main system kill-switch placed outside th
 \hline
 uxcell 4700$\mu$F 63V Electrolytic Capacitors & Voltage smoothing (Parallel) placed inside the enclosure. & 1 & \$13.79 & \$13.79 & Soldered across Red/Black busbars to absorb voltage spikes. \\
 \hline
-% 100 Pack Auto Fuses 20 AMP & Standard ATC fuses for the Chatovalo box. & 1 & \$7.99 & \$7.99 & \textbf{DO NOT USE.} These are 32V rated. You need 58V-rated fuses for a 48V battery system to prevent fire. \\
-% \hline
 MyActuator RMD-X8-120 Motors & Robotic joint actuators. & 6 & \textit{Provided} & \textit{Provided} & Daisy-chained with CAN bus for control. \\
 \hline
-\multicolumn{4}{r}{\textbf{Subtotal (Amazon Components)}} & \textbf{\$297.33} &   \\
+\multicolumn{4}{r}{\textbf{Subtotal (Amazon Components)}} & \textbf{\$491.10} &   \\
 \hline
 \end{tabular}
 \end{table}
-
 
 \subsection{Control System Architecture}
 
@@ -485,6 +374,5 @@ The communication line originates at the controller, connects to the CAN-IN port
 At the software level, the controller communicates with the MyActuator drivers by transmitting standard CAN frames. Each frame consists of a specific CAN ID (targeting an individual motor axis), a Data Length Code (DLC, typically 8 bytes), and a Data Payload containing the precise hexadecimal commands for position, velocity, and current limits. 
 
 To achieve smooth, multi-axis coordinated movement, the software executes a real-time control loop (operating between 100Hz and 500Hz). In each cycle, the controller calculates the inverse kinematics, broadcasts the target position frames to all six axes, and receives immediate feedback frames detailing the current physical angle and electrical current draw of each motor.
-
 
 \end{document}
