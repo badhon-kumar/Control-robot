@@ -1,917 +1,953 @@
 """
-single_input_cartesian.py
-=========================
-Cartesian Motion Control  +  Live 3D Robot Arm Visualizer
+single_input_cartesian_gui.py
+==============================
+Enter a target X/Y/Z position → IK solves the 6 joint angles →
+the arm animates smoothly to the new pose in a live 3-D canvas view.
 
-Enter one X/Y/Z target position → system solves IK → shows how every joint
-adjusts in real time through two live orthographic projection views:
-
-    FRONT VIEW  (XZ plane — side profile)
-    TOP VIEW    (XY plane — bird's eye)
-
-The arm animates live during motion using the FK joint_positions list.
-A ghost outline shows the TARGET pose while the real arm moves toward it.
+Views rendered simultaneously:
+  • Front  (XZ plane)
+  • Side   (YZ plane)
+  • Top    (XY plane)
+  • 3-D    (perspective — drag to rotate)
 
 Run:
-    python3.10 single_input_cartesian.py             ← simulation
-    python3.10 single_input_cartesian.py --real --port /dev/ttyACM0
-
-Requires: numpy   (pip install numpy)
-No matplotlib needed — pure tkinter canvas drawing.
+    python single_input_cartesian_gui.py              ← simulation / visual only
+    python single_input_cartesian_gui.py --real --port COM3
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
 import time
-import logging
-import queue
-import argparse
 import math
+import argparse
+import queue
+import logging
 import numpy as np
 from typing import Optional
 
-from can_interface import CANBus
-from robot_controller import RobotController, DEFAULT_JOINT_CONFIG
-from kinematics import (
-    forward_kinematics, plan_cartesian_motion,
-    CartesianMotionPlan, JOINT_SPEED_LIMITS_DPS, DH_PARAMS
-)
+# ── Optional real-hardware imports ────────────────────────────────────────────
+try:
+    from can_interface import CANBus
+    from robot_controller import RobotController, DEFAULT_JOINT_CONFIG
+    HAS_ROBOT = True
+except ImportError:
+    HAS_ROBOT = False
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-log_queue: queue.Queue = queue.Queue()
+# ══════════════════════════════════════════════════════════════════════════════
+# STANDALONE KINEMATICS (PURE RADIAN + MULTI-SEED)
+# ══════════════════════════════════════════════════════════════════════════════
 
-class QueueHandler(logging.Handler):
-    def emit(self, record):
-        log_queue.put(self.format(record))
+_DH_PARAMS = [
+    [  0.0,        0.127,  0.0,    math.pi/2  ],  # Joint 1 — Base
+    [ -math.pi/2,  0.0,    0.300,  0.0        ],  # Joint 2 — Shoulder
+    [  0.0,        0.0,    0.250,  0.0        ],  # Joint 3 — Elbow
+    [  0.0,        0.102,  0.0,    math.pi/2  ],  # Joint 4 — Wrist1
+    [  0.0,        0.102,  0.0,   -math.pi/2  ],  # Joint 5 — Wrist2
+    [  0.0,        0.060,  0.0,    0.0        ],  # Joint 6 — Tool
+]
 
-# ── Theme ─────────────────────────────────────────────────────────────────────
-BG     = "#0d1117"
-PANEL  = "#161b22"
-CARD   = "#1c2128"
-INPUT  = "#21262d"
-BORDER = "#30363d"
-ACCENT = "#00d4aa"
-BLUE   = "#4dabf7"
-RED    = "#ff4444"
-YELLOW = "#e3b341"
-GREEN  = "#3fb950"
-ORANGE = "#f0883e"
-MUTED  = "#7d8590"
-TEXT   = "#e6edf3"
-JCOLORS = ["#00d4aa","#4dabf7","#e3b341","#ff7eb6","#a5d6ff","#c3e88d"]
-JNAMES  = ["Base","Shoulder","Elbow","Wrist1","Wrist2","Tool"]
+_JOINT_LIMITS_DEG = [
+    (-180.0,  180.0),
+    ( -90.0,   90.0),
+    (-120.0,  120.0),
+    (-180.0,  180.0),
+    ( -90.0,   90.0),
+    (-360.0,  360.0),
+]
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def lbl(parent, text, size=10, color=MUTED, bold=False, bg=CARD, **kw):
-    return tk.Label(parent, text=text,
-                    font=("Courier New", size, "bold" if bold else "normal"),
-                    fg=color, bg=bg, **kw)
+_SPEED_LIMITS = [120.0, 90.0, 90.0, 180.0, 180.0, 200.0]
+_JNAMES       = ["Base", "Shoulder", "Elbow", "Wrist1", "Wrist2", "Tool"]
 
-def ent(parent, var, width=9, **kw):
-    return tk.Entry(parent, textvariable=var, width=width,
-                    font=("Courier New", 12), bg=INPUT, fg=TEXT,
-                    insertbackground=TEXT, relief="flat",
-                    highlightbackground=BORDER, highlightthickness=1, **kw)
 
-def btn(parent, text, color=ACCENT, fg=BG, cmd=None, **kw):
-    return tk.Button(parent, text=text,
-                     font=("Courier New", 11, "bold"),
-                     bg=color, fg=fg, activebackground=color,
-                     relief="flat", cursor="hand2",
-                     command=cmd, padx=14, pady=8, **kw)
+def _dh(theta, d, a, alpha):
+    ct, st = math.cos(theta), math.sin(theta)
+    ca, sa = math.cos(alpha), math.sin(alpha)
+    return np.array([
+        [ct,  -st*ca,  st*sa,  a*ct],
+        [st,   ct*ca, -ct*sa,  a*st],
+        [0.0,  sa,     ca,     d   ],
+        [0.0,  0.0,    0.0,    1.0 ],
+    ])
+
+def _fk_rad(angles_rad):
+    """FK operating entirely in radians. Returns (tip_xyz_m, joint_pts_list)."""
+    T   = np.eye(4)
+    pts = [[0.0, 0.0, 0.0]]
+    for i, (th_off, d, a, alpha) in enumerate(_DH_PARAMS):
+        T = T @ _dh(angles_rad[i] + th_off, d, a, alpha)
+        pts.append([T[0,3], T[1,3], T[2,3]])
+    return T[:3, 3].copy(), pts
+
+def _fk(angles_deg):
+    """Forward kinematics from degrees. Returns (tip_xyz_m, joint_pts_list)."""
+    return _fk_rad(np.deg2rad(angles_deg))
+
+def _jacobian_rad(angles_rad, eps=1e-4):
+    """3×6 position Jacobian, angles in radians, result in m/rad."""
+    base = _fk_rad(angles_rad)[0]
+    J = np.zeros((3, 6))
+    for i in range(6):
+        p = np.array(angles_rad, dtype=float)
+        p[i] += eps
+        J[:, i] = (_fk_rad(p)[0] - base) / eps
+    return J
+
+def _ik(target_m, start_deg=None, max_iter=300, tol=5e-4):
+    """
+    Damped least-squares IK with multi-seed restart.
+    Works entirely in radians to avoid unit-mixing bugs.
+    Returns (angles_deg, error_m, success).
+    """
+    tgt = np.array(target_m, dtype=float)
+    lim_rad = [(math.radians(lo), math.radians(hi)) for lo, hi in _JOINT_LIMITS_DEG]
+
+    # Geometry hint: rotate base to face the target horizontally
+    x, y, _ = tgt
+    base_yaw = math.degrees(math.atan2(y, x)) if (abs(x) > 0.01 or abs(y) > 0.01) else 0.0
+
+    # Rich seed set — varying shoulder, elbow, and wrist-pitch.
+    seeds_deg = []
+    if start_deg is not None:
+        seeds_deg.append(list(start_deg))
+    for j2 in [60, 45, 75, 30, 80]:
+        for j3 in [80, 60, 100, 40, 110]:
+            for j4 in [0, 45, -45, 90, -90, 135, -135]:
+                seeds_deg.append([base_yaw, j2, j3, j4, 0.0, 0.0])
+    
+    # Negative-elbow configs (arm bent the other way)
+    for j2 in [-45, -60, -30]:
+        for j3 in [-80, -60, -100]:
+            for j4 in [0, 90, -90]:
+                seeds_deg.append([base_yaw, j2, j3, j4, 0.0, 0.0])
+
+    best_angles_deg = np.zeros(6)
+    best_err = 1e9
+    lam = 0.05
+
+    for sd in seeds_deg:
+        a = np.deg2rad(np.array(sd, dtype=float))
+        for _ in range(max_iter):
+            pos, _ = _fk_rad(a)
+            err    = tgt - pos
+            n      = float(np.linalg.norm(err))
+            if n < tol:
+                return np.degrees(a), n, True
+            J   = _jacobian_rad(a)
+            JJt = J @ J.T
+            dq  = J.T @ np.linalg.solve(JJt + lam**2 * np.eye(3), err)
+            a   = a + dq * 0.5
+            for i in range(6):
+                lo, hi = lim_rad[i]
+                a[i] = max(lo, min(hi, a[i]))
+        
+        pos, _ = _fk_rad(a)
+        e = float(np.linalg.norm(tgt - pos))
+        if e < best_err:
+            best_err = e
+            best_angles_deg = np.degrees(a).copy()
+
+    return best_angles_deg, best_err, best_err < 0.003
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ARM VISUALIZER  — dual orthographic canvas views
+# THEME
+# ══════════════════════════════════════════════════════════════════════════════
+BG        = "#0a0e14"
+PANEL     = "#111720"
+CARD      = "#161d27"
+INPUT     = "#1c2535"
+BORDER    = "#243044"
+ACCENT    = "#00e5c0"
+BLUE      = "#3d9df5"
+RED       = "#f54d4d"
+YELLOW    = "#f5c542"
+GREEN     = "#40c057"
+ORANGE    = "#f07830"
+MUTED     = "#5a6a80"
+TEXT      = "#d8e4f0"
+DIM       = "#8898aa"
+CANVAS_BG = "#070c12"
+FNT       = "Courier New"
+JCOLORS   = ["#00e5c0","#3d9df5","#f5c542","#f07830","#c084fc","#74d97a"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════════════════════════════
+_lq: queue.Queue = queue.Queue()
+
+class _QH(logging.Handler):
+    def emit(self, r): _lq.put(self.format(r))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3-D ARM VISUALIZER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class ArmVisualizer(tk.Frame):
-    """
-    Draws two live orthographic projections of the 6-DOF robot arm:
-      LEFT  — Front view  : X (horizontal) vs Z (vertical)
-      RIGHT — Top view    : X (horizontal) vs Y (vertical, going away)
 
-    Anatomy of one frame:
-      - Solid colored lines  = real current arm pose (from live FK)
-      - Dashed grey lines    = target ghost pose (after IK, before motion starts)
-      - Colored filled dots  = each joint
-      - Red cross / target   = commanded end-effector target
-      - Coordinate grid      = faint background grid with axis labels
-      - Reachability sphere  = dashed circle showing approximate workspace limit
-
-    The visualizer updates at ~30 Hz via a tkinter after() loop.
-    """
-
-    # World scale: metres → canvas pixels
-    # Adjust SCALE to zoom in/out (pixels per metre)
-    SCALE = 280.0
-
-    # Canvas dimensions
-    W = 340
-    H = 340
+    _VIEW_LABELS = [
+        "FRONT  (X – Z)",
+        "SIDE   (Y – Z)",
+        "TOP    (X – Y)",
+        "3-D  PERSPECTIVE  (drag to rotate)",
+    ]
 
     def __init__(self, parent, **kw):
         super().__init__(parent, bg=BG, **kw)
-
-        # State
-        self._current_joints: list = [[0,0,0]] * 7   # base + 6 joints
-        self._target_joints:  list = None             # ghost pose (None = hidden)
-        self._target_xyz:     Optional[np.ndarray] = None
-        self._animating:      bool = False
-
-        # Approximate max reach (sum of link lengths from DH)
-        self._max_reach = sum(abs(p[2]) + abs(p[1]) for p in DH_PARAMS) * 0.9
-
+        self._pts        = [[0.0, 0.0, 0.0]] * 7
+        self._anim_from  = None
+        self._anim_to    = None
+        self._anim_t0    = 0.0
+        self._anim_dur   = 0.0
+        self._anim_job   = None
+        self._target_xyz = None      # green crosshair in world space (metres)
+        self._yaw        = 35.0
+        self._pitch      = 25.0
+        self._drag       = None
+        self._canvases   = []
         self._build()
-        self._redraw()
 
     def _build(self):
-        # Title
-        lbl(self, "LIVE ARM VISUALIZATION",
-            size=11, color=ACCENT, bold=True, bg=BG).pack(anchor="w", pady=(6,2))
-        lbl(self, "Solid = current pose  ·  Dashed = target ghost  ·  ✕ = target tip",
-            size=8, color=MUTED, bg=BG).pack(anchor="w", pady=(0,6))
+        for r in range(2): self.rowconfigure(r, weight=1)
+        for c in range(2): self.columnconfigure(c, weight=1)
 
-        views_row = tk.Frame(self, bg=BG)
-        views_row.pack(fill="x")
+        for idx, label in enumerate(self._VIEW_LABELS):
+            r, c = divmod(idx, 2)
+            outer = tk.Frame(self, bg=CARD,
+                             highlightbackground=BORDER, highlightthickness=1)
+            outer.grid(row=r, column=c, padx=3, pady=3, sticky="nsew")
 
-        # Front view canvas
-        front_col = tk.Frame(views_row, bg=BG)
-        front_col.pack(side="left", padx=(0,8))
-        lbl(front_col, "FRONT VIEW  (X–Z)", size=10,
-            color=BLUE, bold=True, bg=BG).pack()
-        lbl(front_col, "X →  Z ↑", size=8, color=MUTED, bg=BG).pack()
-        self.canvas_front = tk.Canvas(front_col,
-                                      width=self.W, height=self.H,
-                                      bg=CARD, highlightthickness=1,
-                                      highlightbackground=BORDER)
-        self.canvas_front.pack()
+            hbar = tk.Frame(outer, bg=PANEL)
+            hbar.pack(fill="x")
+            clr = ACCENT if idx == 3 else DIM
+            tk.Label(hbar, text=label, font=(FNT, 8, "bold"),
+                     fg=clr, bg=PANEL).pack(side="left", padx=8, pady=3)
 
-        # Top view canvas
-        top_col = tk.Frame(views_row, bg=BG)
-        top_col.pack(side="left")
-        lbl(top_col, "TOP VIEW  (X–Y)", size=10,
-            color=ORANGE, bold=True, bg=BG).pack()
-        lbl(top_col, "X →  Y ↑ (into screen)", size=8, color=MUTED, bg=BG).pack()
-        self.canvas_top = tk.Canvas(top_col,
-                                    width=self.W, height=self.H,
-                                    bg=CARD, highlightthickness=1,
-                                    highlightbackground=BORDER)
-        self.canvas_top.pack()
+            cv = tk.Canvas(outer, bg=CANVAS_BG, highlightthickness=0)
+            cv.pack(fill="both", expand=True)
+            cv.bind("<Configure>", lambda e, i=idx: self._redraw(i))
 
-        # Joint angle readout strip
-        ang_row = tk.Frame(self, bg=BG)
-        ang_row.pack(fill="x", pady=(8,0))
-        lbl(ang_row, "JOINT ANGLES:", size=9, color=MUTED,
-            bold=True, bg=BG).pack(side="left", padx=(0,8))
-        self._angle_lbls = []
-        for i in range(6):
-            f = tk.Frame(ang_row, bg=BG)
-            f.pack(side="left", padx=4)
-            lbl(f, f"J{i+1}", size=9, color=JCOLORS[i], bold=True, bg=BG).pack()
-            al = lbl(f, "0.0°", size=10, color=TEXT, bg=BG)
-            al.pack()
-            self._angle_lbls.append(al)
+            if idx == 3:
+                cv.bind("<ButtonPress-1>",  self._drag_start)
+                cv.bind("<B1-Motion>",       self._drag_move)
 
-        # End-effector XYZ readout
-        xyz_row = tk.Frame(self, bg=BG)
-        xyz_row.pack(fill="x", pady=(4,0))
-        lbl(xyz_row, "END-EFFECTOR:", size=9, color=MUTED,
-            bold=True, bg=BG).pack(side="left", padx=(0,8))
-        self._ee_lbl = lbl(xyz_row, "X: ---  Y: ---  Z: ---  mm",
-                           size=10, color=ACCENT, bg=BG)
-        self._ee_lbl.pack(side="left")
+            self._canvases.append(cv)
 
-        # Target XYZ readout
-        tgt_row = tk.Frame(self, bg=BG)
-        tgt_row.pack(fill="x", pady=(2,6))
-        lbl(tgt_row, "TARGET:      ", size=9, color=MUTED,
-            bold=True, bg=BG).pack(side="left", padx=(0,8))
-        self._tgt_lbl = lbl(tgt_row, "not set",
-                            size=10, color=YELLOW, bg=BG)
-        self._tgt_lbl.pack(side="left")
+    def _drag_start(self, ev):
+        self._drag = (ev.x, ev.y, self._yaw, self._pitch)
 
-    # ── Coordinate transforms ─────────────────────────────────────────────────
+    def _drag_move(self, ev):
+        if not self._drag: return
+        x0, y0, yaw0, pit0 = self._drag
+        self._yaw   = yaw0   + (ev.x - x0) * 0.45
+        self._pitch = max(-89.0, min(89.0, pit0 - (ev.y - y0) * 0.45))
+        self._redraw(3)
 
-    def _origin(self):
-        """Canvas centre point (pixels)."""
-        return self.W // 2, self.H // 2 + 40   # shift down a bit for vertical arms
+    def set_angles(self, angles_deg, duration=0.0, target_xyz=None):
+        _, new_pts = _fk(angles_deg)
+        if target_xyz is not None:
+            self._target_xyz = list(target_xyz)
+        if duration <= 0:
+            self._pts = new_pts
+            self._cancel_anim()
+            self._redraw_all()
+            return
+        self._cancel_anim()
+        self._anim_from = [list(p) for p in self._pts]
+        self._anim_to   = new_pts
+        self._anim_t0   = time.time()
+        self._anim_dur  = duration
+        self._tick_anim()
 
-    def _to_front(self, xyz):
-        """World [x,y,z] metres → canvas (px, py) for front view (X rightward, Z upward)."""
-        ox, oy = self._origin()
-        px = ox + xyz[0] * self.SCALE
-        py = oy - xyz[2] * self.SCALE   # Z is up, canvas Y is down
-        return px, py
-
-    def _to_top(self, xyz):
-        """World [x,y,z] metres → canvas (px, py) for top view (X rightward, Y upward)."""
-        ox, oy = self._origin()
-        px = ox + xyz[0] * self.SCALE
-        py = oy - xyz[1] * self.SCALE   # Y into screen, canvas Y is down
-        return px, py
-
-    # ── Drawing helpers ───────────────────────────────────────────────────────
-
-    def _draw_grid(self, canvas, proj_fn, axis_h, axis_v):
-        """Draw background grid with axis labels."""
-        ox, oy = self._origin()
-        step_m  = 0.1   # grid every 100mm
-        step_px = step_m * self.SCALE
-
-        # Grid lines
-        grid_range = range(-4, 5)
-        for gi in grid_range:
-            x0  = ox + gi * step_px
-            canvas.create_line(x0, 0, x0, self.H,
-                               fill=INPUT, width=1)
-        for gi in grid_range:
-            y0 = oy - gi * step_px
-            canvas.create_line(0, y0, self.W, y0,
-                               fill=INPUT, width=1)
-
-        # Axis lines (bright)
-        canvas.create_line(0, oy, self.W, oy, fill=BORDER, width=1)
-        canvas.create_line(ox, 0, ox, self.H, fill=BORDER, width=1)
-
-        # Axis labels
-        canvas.create_text(self.W-10, oy-6,
-                           text=f"{axis_h}+",
-                           fill=MUTED, font=("Courier New",7))
-        canvas.create_text(ox+12, 8,
-                           text=f"{axis_v}+",
-                           fill=MUTED, font=("Courier New",7))
-
-        # Workspace radius circle
-        r_px = self._max_reach * self.SCALE
-        canvas.create_oval(ox-r_px, oy-r_px, ox+r_px, oy+r_px,
-                           outline=BORDER, width=1, dash=(4,6))
-        canvas.create_text(ox + r_px*0.72, oy - r_px*0.72,
-                           text="workspace", fill=BORDER,
-                           font=("Courier New",6))
-
-        # Scale bar
-        bar_px = step_px
-        canvas.create_line(10, self.H-14, 10+bar_px, self.H-14,
-                           fill=MUTED, width=2)
-        canvas.create_text(10 + bar_px//2, self.H-6,
-                           text="100mm", fill=MUTED,
-                           font=("Courier New",6))
-
-    def _draw_arm(self, canvas, joints, proj_fn, alpha=1.0,
-                  dashed=False, label_joints=True):
-        """
-        Draw the arm as connected segments on a canvas.
-        joints  : list of [x,y,z] world coords (7 points: base + 6 joints)
-        proj_fn : projection function (front or top)
-        alpha   : unused (tkinter can't do opacity) — dashed instead
-        dashed  : True for ghost target pose
-        """
-        n     = len(joints)
-        dash  = (6, 4) if dashed else ()
-        width = 1 if dashed else 3
-
-        pts = [proj_fn(j) for j in joints]
-
-        # Draw links
-        for i in range(n - 1):
-            x0, y0 = pts[i]
-            x1, y1 = pts[i+1]
-            color = JCOLORS[i] if not dashed else MUTED
-            canvas.create_line(x0, y0, x1, y1,
-                               fill=color, width=width, dash=dash,
-                               capstyle=tk.ROUND, joinstyle=tk.ROUND)
-
-        # Draw joint dots
-        for i in range(n):
-            x, y = pts[i]
-            if dashed:
-                r = 3
-                canvas.create_oval(x-r, y-r, x+r, y+r,
-                                   outline=MUTED, fill="", dash=(3,3))
-            else:
-                r = 5 if i == 0 else (7 if i == n-1 else 4)
-                color = JCOLORS[min(i, 5)]
-                canvas.create_oval(x-r, y-r, x+r, y+r,
-                                   fill=color, outline=BG, width=1)
-                if label_joints and i > 0:
-                    canvas.create_text(x+10, y-8,
-                                       text=f"J{i}",
-                                       fill=color,
-                                       font=("Courier New", 6))
-
-        # Base marker (cross)
-        bx, by = pts[0]
-        canvas.create_line(bx-8, by, bx+8, by, fill=MUTED, width=2)
-        canvas.create_line(bx, by-8, bx, by+8, fill=MUTED, width=2)
-
-        # End-effector highlight
-        ex, ey = pts[-1]
-        r = 8
-        canvas.create_oval(ex-r, ey-r, ex+r, ey+r,
-                           outline=JCOLORS[5] if not dashed else MUTED,
-                           fill="", width=2)
-
-    def _draw_target_cross(self, canvas, xyz, proj_fn):
-        """Draw a red ✕ at the target XYZ position."""
-        tx, ty = proj_fn(xyz)
-        s = 10
-        canvas.create_line(tx-s, ty-s, tx+s, ty+s,
-                           fill=RED, width=2)
-        canvas.create_line(tx+s, ty-s, tx-s, ty+s,
-                           fill=RED, width=2)
-        canvas.create_oval(tx-s, ty-s, tx+s, ty+s,
-                           outline=RED, width=1, dash=(3,3))
-        canvas.create_text(tx+14, ty-12, text="TARGET",
-                           fill=RED, font=("Courier New", 6, "bold"))
-
-    # ── Main redraw ───────────────────────────────────────────────────────────
-
-    def _redraw(self):
-        """Clear and redraw both canvases. Called every 33ms (≈30 Hz)."""
-        self._draw_canvas(self.canvas_front, self._to_front, "X", "Z")
-        self._draw_canvas(self.canvas_top,   self._to_top,   "X", "Y")
-        self.after(33, self._redraw)
-
-    def _draw_canvas(self, canvas, proj_fn, axis_h, axis_v):
-        canvas.delete("all")
-
-        # Grid
-        self._draw_grid(canvas, proj_fn, axis_h, axis_v)
-
-        # Ghost target arm
-        if self._target_joints is not None:
-            self._draw_arm(canvas, self._target_joints, proj_fn,
-                           dashed=True, label_joints=False)
-
-        # Target cross
-        if self._target_xyz is not None:
-            self._draw_target_cross(canvas, self._target_xyz / 1000.0, proj_fn)
-
-        # Real current arm
-        self._draw_arm(canvas, self._current_joints, proj_fn,
-                       dashed=False, label_joints=True)
-
-    # ── Public API (called from outside) ─────────────────────────────────────
-
-    def set_joint_angles(self, angles_deg: list | np.ndarray):
-        """
-        Update visualizer with new joint angles.
-        Recomputes FK and redraws both views.
-        Called from the monitor loop every ~300ms.
-        """
-        fk = forward_kinematics(angles_deg)
-        self._current_joints = fk.joint_positions   # list of [x,y,z]
-
-        # Update angle strip
-        for i, a in enumerate(angles_deg):
-            self._angle_lbls[i].config(text=f"{float(a):+.1f}°")
-
-        # Update EE readout
-        p = fk.position_mm()
-        self._ee_lbl.config(text=f"X:{p[0]:+.0f}  Y:{p[1]:+.0f}  Z:{p[2]:+.0f} mm")
-
-    def set_target(self, target_mm: np.ndarray, target_angles_deg: np.ndarray):
-        """
-        Set the ghost target pose.
-        target_mm         : [x,y,z] in mm (for the red cross)
-        target_angles_deg : IK solution angles (for the ghost arm)
-        """
-        self._target_xyz   = target_mm.copy()
-        fk = forward_kinematics(target_angles_deg)
-        self._target_joints = fk.joint_positions
-        self._tgt_lbl.config(
-            text=f"X:{target_mm[0]:+.0f}  Y:{target_mm[1]:+.0f}  Z:{target_mm[2]:+.0f} mm",
-            fg=YELLOW)
+    def set_target(self, xyz_m):
+        self._target_xyz = list(xyz_m) if xyz_m else None
+        self._redraw_all()
 
     def clear_target(self):
-        self._target_joints = None
-        self._target_xyz    = None
-        self._tgt_lbl.config(text="not set", fg=MUTED)
+        self._target_xyz = None
+        self._redraw_all()
+
+    def _cancel_anim(self):
+        if self._anim_job:
+            self.after_cancel(self._anim_job)
+            self._anim_job = None
+
+    def _tick_anim(self):
+        elapsed = time.time() - self._anim_t0
+        t = min(elapsed / self._anim_dur, 1.0)
+        t = t * t * (3 - 2 * t)            # smooth step
+        self._pts = [
+            [self._anim_from[i][j] +
+             (self._anim_to[i][j] - self._anim_from[i][j]) * t
+             for j in range(3)]
+            for i in range(len(self._anim_from))
+        ]
+        self._redraw_all()
+        if t < 1.0:
+            self._anim_job = self.after(16, self._tick_anim)
+        else:
+            self._pts = self._anim_to
+            self._anim_job = None
+
+    def _redraw_all(self):
+        for i in range(4): self._redraw(i)
+
+    def _redraw(self, idx):
+        cv = self._canvases[idx]
+        w = cv.winfo_width()
+        h = cv.winfo_height()
+        if w < 20 or h < 20: return
+        cv.delete("all")
+        if   idx == 0: self._draw_ortho(cv, w, h, 0, 2, "X", "Z", True)
+        elif idx == 1: self._draw_ortho(cv, w, h, 1, 2, "Y", "Z", True)
+        elif idx == 2: self._draw_ortho(cv, w, h, 0, 1, "X", "Y", False)
+        else:          self._draw_3d(cv, w, h)
+
+    def _draw_ortho(self, cv, w, h, ax1, ax2, xl, yl, flip_y):
+        mg  = 32
+        scl = min(w - 2*mg, h - 2*mg) / 0.90
+        cx, cy = w / 2, h / 2
+
+        step = 0.10
+        n    = 5
+        for i in range(-n, n+1):
+            col = "#1e2d40" if i != 0 else "#253548"
+            cv.create_line(cx + i*step*scl, 0, cx + i*step*scl, h, fill=col)
+            cv.create_line(0, cy + i*step*scl, w, cy + i*step*scl, fill=col)
+
+        cv.create_text(w-6, cy, text=f"+{xl}", fill=MUTED, font=(FNT, 8), anchor="e")
+        cv.create_text(cx,  6,  text=f"+{yl}", fill=MUTED, font=(FNT, 8), anchor="n")
+
+        def proj(p):
+            sx = p[ax1] * scl + cx
+            sy = ((-p[ax2]) if flip_y else p[ax2]) * scl + cy
+            return sx, sy
+
+        if self._target_xyz:
+            tx, ty = proj(self._target_xyz)
+            r = 8
+            cv.create_oval(tx-r, ty-r, tx+r, ty+r,
+                           outline=GREEN, fill="", width=2, dash=(4, 3))
+            cv.create_line(tx-r-4, ty, tx+r+4, ty, fill=GREEN, width=1)
+            cv.create_line(tx, ty-r-4, tx, ty+r+4, fill=GREEN, width=1)
+
+        pts2 = [proj(p) for p in self._pts]
+        for i in range(len(pts2)-1):
+            col = JCOLORS[min(i, 5)]
+            lw  = 5 if i == 0 else (4 if i < 4 else 3)
+            cv.create_line(*pts2[i], *pts2[i+1],
+                           fill=col, width=lw, capstyle="round")
+
+        for i, (sx, sy) in enumerate(pts2):
+            if i == 0:
+                s = 5
+                cv.create_rectangle(sx-s, sy-s, sx+s, sy+s,
+                                    fill=JCOLORS[0], outline=CANVAS_BG)
+            elif i == len(pts2)-1:
+                r = 8
+                cv.create_oval(sx-r, sy-r, sx+r, sy+r,
+                               fill=JCOLORS[5], outline=CANVAS_BG, width=2)
+            else:
+                r = 4
+                cv.create_oval(sx-r, sy-r, sx+r, sy+r,
+                               fill=JCOLORS[i], outline=CANVAS_BG)
+
+        tip = self._pts[-1]
+        cv.create_text(6, h-6,
+                       text=f"X:{tip[0]*1000:+.0f}  Y:{tip[1]*1000:+.0f}  Z:{tip[2]*1000:+.0f} mm",
+                       fill=DIM, font=(FNT, 7), anchor="sw")
+
+    def _proj3d(self, x, y, z, scl, cx, cy):
+        yaw   = math.radians(self._yaw)
+        pitch = math.radians(self._pitch)
+        rx =  x * math.cos(yaw) - y * math.sin(yaw)
+        ry =  x * math.sin(yaw) + y * math.cos(yaw)
+        ry2 =  ry * math.cos(pitch) - z * math.sin(pitch)
+        rz2 =  ry * math.sin(pitch) + z * math.cos(pitch)
+        dist = max(1.8 + rz2 * 0.35, 0.3)
+        return cx + rx/dist*scl, cy - ry2/dist*scl
+
+    def _draw_3d(self, cv, w, h):
+        mg  = 36
+        scl = min(w-2*mg, h-2*mg) / 0.85
+        cx, cy = w*0.5, h*0.52
+
+        step, n = 0.10, 4
+        for i in range(-n, n+1):
+            x0, y0 = self._proj3d(-n*step, i*step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d( n*step, i*step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=BORDER)
+            x0, y0 = self._proj3d(i*step, -n*step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d(i*step,  n*step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=BORDER)
+
+        for v, lbl, col in [((0.3,0,0),"X","#c04040"),
+                             ((0,0.3,0),"Y","#40c040"),
+                             ((0,0,0.3),"Z","#4040ff")]:
+            ox, oy = self._proj3d(0,0,0, scl, cx, cy)
+            ax, ay = self._proj3d(*v,    scl, cx, cy)
+            cv.create_line(ox,oy,ax,ay, fill=col, width=2, arrow="last")
+            cv.create_text(ax+4, ay, text=lbl, fill=col, font=(FNT,8,"bold"))
+
+        if self._target_xyz:
+            tx, ty = self._proj3d(*self._target_xyz, scl, cx, cy)
+            r = 10
+            cv.create_oval(tx-r, ty-r, tx+r, ty+r,
+                           outline=GREEN, fill="", width=2, dash=(4,2))
+            cv.create_text(tx+r+4, ty, text="TARGET",
+                           fill=GREEN, font=(FNT,7), anchor="w")
+
+        proj = [self._proj3d(p[0],p[1],p[2], scl, cx, cy) for p in self._pts]
+        for i in range(len(proj)-1):
+            col = JCOLORS[min(i,5)]
+            lw  = 5 if i==0 else (4 if i<4 else 3)
+            cv.create_line(*proj[i], *proj[i+1],
+                           fill="#000000", width=lw+3, capstyle="round")
+            cv.create_line(*proj[i], *proj[i+1],
+                           fill=col,      width=lw,   capstyle="round")
+
+        for i, (sx, sy) in enumerate(proj):
+            if i == 0:
+                r = 7
+                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
+                               fill=JCOLORS[0], outline=CANVAS_BG, width=2)
+            elif i == len(proj)-1:
+                r = 9
+                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
+                               fill=JCOLORS[5], outline=CANVAS_BG, width=2)
+                cv.create_text(sx, sy-r-5, text="TIP",
+                               fill=JCOLORS[5], font=(FNT,7,"bold"))
+            else:
+                r = 5
+                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
+                               fill=JCOLORS[i], outline=CANVAS_BG)
+                cv.create_text(sx+r+3, sy, text=f"M{i+1}",
+                               fill=JCOLORS[i], font=(FNT,7))
+
+        tip = self._pts[-1]
+        cv.create_text(6, h-6,
+                       text=f"TIP  X:{tip[0]*1000:+.0f}  Y:{tip[1]*1000:+.0f}  Z:{tip[2]*1000:+.0f} mm",
+                       fill=DIM, font=(FNT, 7), anchor="sw")
+        cv.create_text(w-6, 6,
+                       text=f"yaw {self._yaw:.0f}°  pitch {self._pitch:.0f}°",
+                       fill=MUTED, font=(FNT, 7), anchor="ne")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# INPUT PANEL  — single X/Y/Z + Time input
+# IK RESULT TABLE
 # ══════════════════════════════════════════════════════════════════════════════
 
-class InputPanel(tk.Frame):
-    """
-    Left-side control panel:
-    - Single X / Y / Z target input (mm)
-    - Time input (seconds)
-    - Mode: Relative or Absolute
-    - Compute Plan → Execute → Stop
-    - IK result table
-    - Speed bars
-    """
-
-    def __init__(self, parent, get_robot, get_angles, log_fn,
-                 on_plan_cb=None, **kw):
-        super().__init__(parent, bg=BG, **kw)
-        self._get_robot  = get_robot
-        self._get_angles = get_angles
-        self._log        = log_fn
-        self._on_plan_cb = on_plan_cb   # called with (plan) when IK solved
-        self._plan: Optional[CartesianMotionPlan] = None
-        self._executing  = False
+class IKTable(tk.Frame):
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=CARD,
+                         highlightbackground=BORDER, highlightthickness=1, **kw)
+        self._rows = []
         self._build()
 
     def _build(self):
-        # Mode
-        mc = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
-        mc.pack(fill="x", pady=(0,10))
-        lbl(mc, "MOTION MODE", size=9, bg=CARD).pack(anchor="w", padx=12, pady=(10,6))
-        self.mode_var = tk.StringVar(value="Relative")
-        mr = tk.Frame(mc, bg=CARD)
-        mr.pack(padx=12, pady=(0,10))
-        for m, desc in [("Relative","Δ from current  (move by)"),
-                        ("Absolute","exact position from base")]:
-            tk.Radiobutton(mr, text=f"  {m}  —  {desc}",
-                           variable=self.mode_var, value=m,
-                           font=("Courier New",10), bg=CARD, fg=TEXT,
-                           selectcolor=INPUT, activebackground=CARD,
-                           activeforeground=TEXT,
-                           command=self._on_mode).pack(anchor="w", pady=2)
+        hdr = tk.Frame(self, bg=PANEL)
+        hdr.pack(fill="x")
+        for txt, w in [("Motor",9),("Name",10),("Current°",10),
+                       ("Target°",10),("Δ°",8),("Speed°/s",11),("Status",8)]:
+            tk.Label(hdr, text=txt, font=(FNT,8,"bold"),
+                     fg=MUTED, bg=PANEL, width=w, anchor="w"
+                     ).pack(side="left", padx=3, pady=3)
 
-        # Target input card
-        ic = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
-        ic.pack(fill="x", pady=(0,10))
-        self.inp_hdr = lbl(ic, "TARGET DISPLACEMENT  (mm)", size=9, bg=CARD)
-        self.inp_hdr.pack(anchor="w", padx=12, pady=(10,6))
-
-        # Big X Y Z entries
-        xyz_f = tk.Frame(ic, bg=CARD)
-        xyz_f.pack(pady=10)
-        self.x_var = tk.StringVar(value="0.0")
-        self.y_var = tk.StringVar(value="0.0")
-        self.z_var = tk.StringVar(value="0.0")
-        for axis, var, color in [("X", self.x_var, ACCENT),
-                                  ("Y", self.y_var, BLUE),
-                                  ("Z", self.z_var, YELLOW)]:
-            f = tk.Frame(xyz_f, bg=CARD)
-            f.pack(side="left", padx=18)
-            lbl(f, axis, size=24, color=color, bold=True, bg=CARD).pack()
-            ent(f, var, width=8).pack(pady=(4,2))
-            lbl(f, "mm", size=9, bg=CARD).pack()
-
-        # Separator + Time
-        tk.Frame(ic, bg=BORDER, height=1).pack(fill="x", pady=8)
-        tr = tk.Frame(ic, bg=CARD)
-        tr.pack(padx=12, pady=(0,12))
-        lbl(tr, "T", size=22, color="#ff7eb6", bold=True, bg=CARD).pack(side="left", padx=(0,10))
-        self.t_var = tk.StringVar(value="3.0")
-        ent(tr, self.t_var, width=7).pack(side="left")
-        lbl(tr, "  seconds\n  (speeds auto-computed per joint)",
-            size=9, color=MUTED, bg=CARD).pack(side="left", padx=8)
-
-        # Action buttons
-        br = tk.Frame(self, bg=BG)
-        br.pack(fill="x", pady=10)
-        self.btn_compute = btn(br, "COMPUTE + PREVIEW", BLUE, fg=BG,
-                               cmd=self._compute)
-        self.btn_compute.pack(side="left", padx=(0,6))
-        self.btn_exec = btn(br, "▶  EXECUTE", ACCENT, fg=BG,
-                            cmd=self._execute, state="disabled")
-        self.btn_exec.pack(side="left", padx=(0,6))
-        btn(br, "■  STOP", RED, fg=TEXT,
-            cmd=self._stop).pack(side="left", padx=(0,6))
-        btn(br, "HOME", PANEL, fg=MUTED,
-            cmd=self._home).pack(side="left")
-
-        # Status + progress
-        self.lbl_status = lbl(self, "Enter X Y Z and click COMPUTE.",
-                              size=10, color=MUTED, bg=BG)
-        self.lbl_status.pack(anchor="w", pady=(6,4))
-        self.prog_var = tk.DoubleVar(value=0)
-        style = ttk.Style()
-        style.configure("IP.Horizontal.TProgressbar",
-                        troughcolor=INPUT, background=ACCENT,
-                        bordercolor=BORDER)
-        ttk.Progressbar(self, variable=self.prog_var, maximum=100,
-                        style="IP.Horizontal.TProgressbar").pack(fill="x")
-
-        # IK result table
-        tbl = tk.Frame(self, bg=CARD, highlightbackground=BORDER,
-                       highlightthickness=1)
-        tbl.pack(fill="x", pady=(10,8))
-        lbl(tbl, "IK SOLUTION  —  per joint", size=9, bg=CARD).pack(
-            anchor="w", padx=12, pady=(10,6))
-
-        hdr = tk.Frame(tbl, bg=PANEL)
-        hdr.pack(fill="x", padx=8)
-        for txt, w in [("Jt",3),("Name",8),("Current",8),
-                       ("Target",8),("Δ°",6),("Speed",9),("",5)]:
-            lbl(hdr, txt, size=9, bold=True, bg=PANEL,
-                width=w).pack(side="left", padx=2, pady=4)
-
-        self.tbl_rows = []
         for i in range(6):
-            r = tk.Frame(tbl, bg=CARD)
-            r.pack(fill="x", padx=8, pady=2)
+            bg  = CARD if i%2==0 else INPUT
+            row = tk.Frame(self, bg=bg)
+            row.pack(fill="x")
             cells = {}
-            cells["j"]   = lbl(r, f"J{i+1}", size=10, color=JCOLORS[i], bold=True, bg=CARD, width=3)
-            cells["nm"]  = lbl(r, JNAMES[i], size=10, color=MUTED, bg=CARD, width=8)
-            cells["cur"] = lbl(r, "---", size=10, color=MUTED, bg=CARD, width=8)
-            cells["tgt"] = lbl(r, "---", size=10, color=TEXT, bg=CARD, width=8)
-            cells["d"]   = lbl(r, "---", size=10, bg=CARD, width=6)
-            cells["spd"] = lbl(r, "---", size=10, color=ACCENT, bg=CARD, width=9)
-            cells["ok"]  = lbl(r, "",   size=9, color=GREEN, bg=CARD, width=5)
-            for c in cells.values():
-                c.pack(side="left", padx=2)
-            self.tbl_rows.append(cells)
+            defs  = [("motor",9,JCOLORS[i]),("name",10,DIM),
+                     ("cur",10,DIM),("tgt",10,TEXT),
+                     ("dlt",8,TEXT),("spd",11,ACCENT),("sts",8,DIM)]
+            for key, w, fg in defs:
+                lbl = tk.Label(row, text="—", font=(FNT,9),
+                               fg=fg, bg=bg, width=w, anchor="w")
+                lbl.pack(side="left", padx=3, pady=2)
+                cells[key] = lbl
+            cells["motor"].config(text=f"Motor {i+1}")
+            cells["name"].config(text=_JNAMES[i])
+            cells["cur"].config(text="  0.0°")
+            self._rows.append(cells)
 
-        self.lbl_ik = lbl(tbl, "", size=10, color=MUTED, bg=CARD)
-        self.lbl_ik.pack(anchor="w", padx=12, pady=(6,10))
+    def update_row(self, i, cur_deg, tgt_deg, spd):
+        if not 0 <= i < 6: return
+        c    = self._rows[i]
+        dlt  = tgt_deg - cur_deg
+        clmp = spd >= _SPEED_LIMITS[i] * 0.95
+        c["cur"].config(text=f"{cur_deg:+.1f}°",  fg=DIM)
+        c["tgt"].config(text=f"{tgt_deg:+.1f}°",  fg=TEXT)
+        c["dlt"].config(text=f"{dlt:+.1f}°",
+                        fg=YELLOW if abs(dlt)>0.5 else GREEN)
+        c["spd"].config(text=f"{spd:.1f}°/s",
+                        fg=RED if clmp else ACCENT)
+        c["sts"].config(text="⚠CLAMP" if clmp else "✓ OK",
+                        fg=RED if clmp else GREEN)
 
-        # Speed bars
-        bars = tk.Frame(self, bg=CARD, highlightbackground=BORDER,
-                        highlightthickness=1)
-        bars.pack(fill="x")
-        lbl(bars, "JOINT SPEED LOAD", size=9, bg=CARD).pack(
-            anchor="w", padx=12, pady=(10,6))
-        self._bar_fills = []
-        self._bar_lbls  = []
-        for i in range(6):
-            br2 = tk.Frame(bars, bg=CARD)
-            br2.pack(fill="x", padx=12, pady=2)
-            lbl(br2, f"J{i+1}", size=10, color=JCOLORS[i], bold=True,
-                bg=CARD, width=3).pack(side="left")
-            bg_bar = tk.Frame(br2, bg=INPUT, height=16, width=200)
-            bg_bar.pack(side="left", padx=6)
-            bg_bar.pack_propagate(False)
-            fill = tk.Frame(bg_bar, bg=JCOLORS[i], height=16, width=0)
-            fill.place(x=0, y=0, relheight=1)
-            self._bar_fills.append((bg_bar, fill))
-            bl = lbl(br2, "---", size=10, color=TEXT, bg=CARD)
-            bl.pack(side="left", padx=6)
-            self._bar_lbls.append(bl)
-        lbl(bars, "", bg=CARD).pack(pady=6)
-
-        # Mini log
-        log_hdr = tk.Frame(self, bg=PANEL)
-        log_hdr.pack(fill="x", pady=(10,0))
-        lbl(log_hdr, "LOG", size=9, color=MUTED, bg=PANEL).pack(
-            side="left", padx=8, pady=4)
-        tk.Button(log_hdr, text="CLR", font=("Courier New",9),
-                  bg=PANEL, fg=MUTED, relief="flat", cursor="hand2",
-                  command=lambda: (self.log_box.config(state="normal"),
-                                   self.log_box.delete("1.0","end"),
-                                   self.log_box.config(state="disabled"))
-                  ).pack(side="right", padx=6)
-        self.log_box = scrolledtext.ScrolledText(
-            self, height=5, font=("Courier New",10),
-            bg=PANEL, fg=MUTED, relief="flat",
-            state="disabled", wrap="word")
-        self.log_box.pack(fill="x")
-        self.log_box.tag_config("ok",   foreground=GREEN)
-        self.log_box.tag_config("warn", foreground=YELLOW)
-        self.log_box.tag_config("err",  foreground=RED)
-        self.log_box.tag_config("info", foreground=MUTED)
-
-    def _on_mode(self):
-        if self.mode_var.get() == "Absolute":
-            self.inp_hdr.config(text="ABSOLUTE TARGET  (mm from base)")
-        else:
-            self.inp_hdr.config(text="TARGET DISPLACEMENT  (mm)")
-
-    def _parse(self):
-        try:
-            x = float(self.x_var.get())
-            y = float(self.y_var.get())
-            z = float(self.z_var.get())
-            t = float(self.t_var.get())
-        except ValueError:
-            messagebox.showerror("Input Error", "X, Y, Z, T must all be numbers.")
-            return None
-        if t <= 0:
-            messagebox.showerror("Input Error", "Time T must be > 0.")
-            return None
-        return x, y, z, t
-
-    def _compute(self):
-        v = self._parse()
-        if v is None:
-            return
-        x, y, z, t = v
-        cur = self._get_angles()
-        self.btn_compute.config(state="disabled", text="COMPUTING IK...")
-        self._log_m(f"IK → ({x:+.0f},{y:+.0f},{z:+.0f}) mm  T={t}s")
-        threading.Thread(target=self._compute_worker,
-                         args=(x,y,z,t,cur), daemon=True).start()
-
-    def _compute_worker(self, x, y, z, t, cur):
-        mode = self.mode_var.get().lower()
-        if mode == "absolute":
-            plan = plan_cartesian_motion([], t, cur, "absolute", [x,y,z])
-        else:
-            plan = plan_cartesian_motion([x,y,z], t, cur, "relative")
-        self.after(0, lambda: self._on_plan(plan))
-
-    def _on_plan(self, plan: CartesianMotionPlan):
-        self.btn_compute.config(state="normal", text="COMPUTE + PREVIEW")
-        self._plan = plan
-
-        if not plan.success:
-            messagebox.showerror("IK Failed", plan.message)
-            self.lbl_status.config(text=f"Failed: {plan.message}", fg=RED)
-            self._log_m(f"IK FAILED: {plan.message}", "err")
-            return
-
-        self.btn_exec.config(state="normal")
-
-        # Update table
-        for i, r in enumerate(self.tbl_rows):
-            spd     = plan.speeds_dps[i]
-            clamped = spd >= JOINT_SPEED_LIMITS_DPS[i] * 0.99
-            r["cur"].config(text=f"{plan.start_angles_deg[i]:+.1f}°", fg=MUTED)
-            r["tgt"].config(text=f"{plan.target_angles_deg[i]:+.1f}°", fg=TEXT)
-            r["d"].config(text=f"{plan.angle_changes_deg[i]:.1f}°", fg=TEXT)
-            r["spd"].config(text=f"{spd:.1f}°/s",
-                            fg=RED if clamped else ACCENT)
-            r["ok"].config(text="⚠CLMP" if clamped else "✓ OK",
-                           fg=RED if clamped else GREEN)
-
-        # Speed bars
-        for i in range(6):
-            ratio = min(plan.speeds_dps[i] / JOINT_SPEED_LIMITS_DPS[i], 1.0)
-            _, fill = self._bar_fills[i]
-            fill.place(width=int(200*ratio))
-            fill.config(bg=RED if ratio>0.9 else (YELLOW if ratio>0.7 else JCOLORS[i]))
-            self._bar_lbls[i].config(text=f"{plan.speeds_dps[i]:.1f}°/s")
-
-        ik_c = GREEN if plan.ik_error_mm < 1 else (YELLOW if plan.ik_error_mm < 5 else RED)
-        self.lbl_ik.config(
-            text=f"IK err:{plan.ik_error_mm:.2f}mm  max:{plan.max_speed_dps:.1f}°/s  t:{plan.time_s:.2f}s",
-            fg=ik_c)
-        self.lbl_status.config(text=f"Plan ready — {plan.time_s:.1f}s", fg=GREEN)
-        self._log_m(f"Plan OK — IK err {plan.ik_error_mm:.2f}mm", "ok")
-
-        # Notify visualizer
-        if self._on_plan_cb:
-            self._on_plan_cb(plan)
-
-    def _execute(self):
-        robot = self._get_robot()
-        if not robot:
-            messagebox.showwarning("Not Connected", "Connect first.")
-            return
-        if not self._plan or self._executing:
-            return
-        self._executing = True
-        self.btn_exec.config(state="disabled", text="EXECUTING...")
-        self.prog_var.set(0)
-        self._log_m(f"▶ Executing {self._plan.time_s:.1f}s motion...", "ok")
-        threading.Thread(target=self._exec_worker,
-                         args=(robot, self._plan), daemon=True).start()
-
-    def _exec_worker(self, robot, plan):
-        for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
-            robot.motors[cfg.motor_id].set_position(
-                float(plan.target_angles_deg[i]),
-                max_speed_dps=float(plan.speeds_dps[i]),
-                wait=False)
-            time.sleep(0.001)
-
-        t0 = time.time()
-        while True:
-            elapsed = time.time() - t0
-            pct = min(elapsed / plan.time_s * 100, 100)
-            self.after(0, lambda p=pct: self.prog_var.set(p))
-            if elapsed >= plan.time_s + 0.5:
-                break
-            time.sleep(0.05)
-        self.after(0, self._exec_done)
-
-    def _exec_done(self):
-        self._executing = False
-        self.prog_var.set(100)
-        self.btn_exec.config(state="normal", text="▶  EXECUTE")
-        self.lbl_status.config(text="Motion complete.", fg=GREEN)
-        self._log_m("Motion complete.", "ok")
-
-    def _stop(self):
-        robot = self._get_robot()
-        if robot:
-            threading.Thread(target=robot.stop_all, daemon=True).start()
-        self._executing = False
-        self.prog_var.set(0)
-        self.btn_exec.config(
-            state="normal" if self._plan else "disabled", text="▶  EXECUTE")
-        self._log_m("Stopped.", "warn")
-
-    def _home(self):
-        robot = self._get_robot()
-        if robot:
-            threading.Thread(target=robot.go_home,
-                             kwargs={"speed_dps":60,"wait":False},
-                             daemon=True).start()
-            self._log_m("Homing.")
-
-    def _log_m(self, msg, tag="info"):
-        ts = time.strftime("%H:%M:%S")
-        self.log_box.config(state="normal")
-        self.log_box.insert("end", f"{ts}  {msg}\n", tag)
-        self.log_box.see("end")
-        self.log_box.config(state="disabled")
-
-    def poll_log(self):
-        while not log_queue.empty():
-            msg = log_queue.get_nowait()
-            tag = "warn" if "WARNING" in msg else ("err" if "ERROR" in msg else "info")
-            self._log_m(msg, tag)
-        self.after(150, self.poll_log)
+    def set_current(self, angles):
+        for i, a in enumerate(angles):
+            self._rows[i]["cur"].config(text=f"{a:+.1f}°")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MAIN WINDOW
+# MAIN APPLICATION
 # ══════════════════════════════════════════════════════════════════════════════
 
-class CartesianVisApp(tk.Tk):
+class CartesianGUI(tk.Tk):
     def __init__(self, simulated=True, port="COM3", bustype="slcan"):
         super().__init__()
-        self.title("RMD-X8-120  ·  Cartesian Control  +  Live Arm Visualizer")
+        self.title("6-Axis Robot  ·  Cartesian Input + Arm Visualizer")
         self.configure(bg=BG)
-        self.minsize(1400, 900)
+        self.minsize(1300, 880)
 
-        self.robot: Optional[RobotController] = None
-        self.bus:   Optional[CANBus]          = None
-        self._sim   = simulated
-        self._port  = port
-        self._bus_t = bustype
-        self._monitor_job = None
+        self._sim       = simulated
+        self._port      = port
+        self._bus_t     = bustype
+        self.robot      = None
+        self.bus        = None
+        self._connected = False
+        self._cur_ang   = [0.0] * 6
+        self._ik_ang    = None
+        self._ik_err    = None
+        self._executing = False
+        self._mon_job   = None
 
-        handler = QueueHandler()
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s", "%H:%M:%S"))
-        logging.getLogger().addHandler(handler)
+        _h = _QH()
+        _h.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+        logging.getLogger().addHandler(_h)
         logging.getLogger().setLevel(logging.INFO)
 
         self._build()
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._poll_log()
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        self.after(200, lambda: self._viz.set_angles([0.0]*6))
 
         if simulated:
             self.after(400, self._connect)
 
     def _build(self):
-        # ── Top bar ───────────────────────────────────────────────────────────
-        top = tk.Frame(self, bg=PANEL, height=60)
-        top.pack(fill="x")
-        top.pack_propagate(False)
-        lbl(top, "⬡  RMD-X8-120  CARTESIAN  +  VISUALIZER",
-            size=13, color=ACCENT, bold=True, bg=PANEL
-            ).pack(side="left", padx=16, pady=14)
+        top = tk.Frame(self, bg=PANEL, height=52)
+        top.pack(fill="x"); top.pack_propagate(False)
+        tk.Label(top, text="⬡  6-AXIS CARTESIAN CONTROL  +  ARM VISUALIZER",
+                 font=(FNT,13,"bold"), fg=ACCENT, bg=PANEL
+                 ).pack(side="left", padx=18, pady=12)
+        self._lbl_c = tk.Label(top, text="● DISCONNECTED",
+                                font=(FNT,9,"bold"), fg=RED, bg=PANEL)
+        self._lbl_c.pack(side="right", padx=16)
+        mode = "SIMULATION" if self._sim else f"REAL · {self._port}"
+        tk.Label(top, text=mode, font=(FNT,8), fg=MUTED, bg=PANEL
+                 ).pack(side="right", padx=4)
+        self._btn(top,"DISCONNECT",PANEL,RED,  self._disconnect).pack(side="right",padx=4)
+        self._btn(top,"CONNECT",   ACCENT,BG,  self._connect).pack(side="right",padx=4)
 
-        self.lbl_conn = lbl(top, "● DISCONNECTED", size=11,
-                            color=RED, bold=True, bg=PANEL)
-        self.lbl_conn.pack(side="right", padx=12)
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True)
 
-        mode_txt = "SIMULATION" if self._sim else f"REAL · {self._port}"
-        lbl(top, mode_txt, size=10, color=MUTED, bg=PANEL).pack(side="right", padx=4)
-        btn(top, "DISCONNECT", PANEL, fg=RED,
-            cmd=self._disconnect).pack(side="right", padx=6)
-        btn(top, "CONNECT", ACCENT, fg=BG,
-            cmd=self._connect).pack(side="right", padx=6)
+        left = tk.Frame(body, bg=BG, width=430)
+        left.pack(side="left", fill="y", padx=(10,5), pady=8)
+        left.pack_propagate(False)
+        self._build_controls(left)
 
-        # ── Main layout: left=input panel, right=visualizer ───────────────────
-        main = tk.Frame(self, bg=BG)
-        main.pack(fill="both", expand=True, padx=12, pady=8)
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="right", fill="both", expand=True, padx=(5,10), pady=8)
+        self._build_viz_panel(right)
 
-        # Scrollable left panel
-        left_outer = tk.Frame(main, bg=BG, width=540)
-        left_outer.pack(side="left", fill="y", padx=(0,14))
-        left_outer.pack_propagate(False)
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        lh = tk.Frame(self, bg=PANEL); lh.pack(fill="x")
+        tk.Label(lh, text="SYSTEM LOG", font=(FNT,8),
+                 fg=MUTED, bg=PANEL, pady=3).pack(side="left", padx=12)
+        tk.Button(lh, text="CLEAR", font=(FNT,8), bg=PANEL, fg=MUTED,
+                  relief="flat", cursor="hand2",
+                  command=self._clear_log).pack(side="right", padx=12)
+        self._lbox = scrolledtext.ScrolledText(
+            self, height=5, font=(FNT,9),
+            bg=PANEL, fg=MUTED, relief="flat",
+            state="disabled", wrap="word")
+        self._lbox.pack(fill="x")
+        for t, c in [("ok",GREEN),("warn",YELLOW),("err",RED),("info",DIM)]:
+            self._lbox.tag_config(t, foreground=c)
 
-        left_canvas = tk.Canvas(left_outer, bg=BG, highlightthickness=0, width=530)
-        left_scroll  = ttk.Scrollbar(left_outer, orient="vertical",
-                                     command=left_canvas.yview)
-        left_inner   = tk.Frame(left_canvas, bg=BG)
-        left_inner.bind("<Configure>",
-            lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
-        left_canvas.create_window((0,0), window=left_inner, anchor="nw")
-        left_canvas.configure(yscrollcommand=left_scroll.set)
-        left_scroll.pack(side="right", fill="y")
-        left_canvas.pack(side="left", fill="both", expand=True)
+    def _build_controls(self, parent):
+        card = tk.Frame(parent, bg=CARD,
+                        highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", pady=(0,8))
 
-        # Bind mousewheel on left panel
-        def _on_wheel(e):
-            left_canvas.yview_scroll(int(-1*(e.delta/120)), "units")
-        left_canvas.bind_all("<MouseWheel>", _on_wheel)
+        tk.Label(card, text="TARGET POSITION  (mm from base origin)",
+                 font=(FNT,9,"bold"), fg=ACCENT, bg=CARD
+                 ).pack(anchor="w", padx=12, pady=(10,6))
 
-        self.input_panel = InputPanel(
-            left_inner,
-            get_robot=lambda: self.robot,
-            get_angles=self._get_angles,
-            log_fn=lambda m, t="info": None,
-            on_plan_cb=self._on_plan_ready,
-        )
-        self.input_panel.pack(fill="x", padx=4)
-        self.input_panel.poll_log()
+        xyz_f = tk.Frame(card, bg=CARD); xyz_f.pack(pady=(0,8))
+        
+        # Reachable Defaults!
+        self._xv = tk.StringVar(value="300.0")
+        self._yv = tk.StringVar(value="0.0")
+        self._zv = tk.StringVar(value="400.0")
 
-        # Right: visualizer
-        right = tk.Frame(main, bg=BG)
-        right.pack(side="right", fill="both", expand=True)
+        for ax, var, col in [("X",self._xv,ACCENT),
+                              ("Y",self._yv,BLUE),
+                              ("Z",self._zv,YELLOW)]:
+            cf = tk.Frame(xyz_f, bg=CARD); cf.pack(side="left", padx=14)
+            tk.Label(cf, text=ax, font=(FNT,20,"bold"),
+                     fg=col, bg=CARD).pack()
+            e = tk.Entry(cf, textvariable=var, width=8,
+                         font=(FNT,11), bg=INPUT, fg=TEXT,
+                         insertbackground=TEXT, relief="flat",
+                         highlightbackground=BORDER, highlightthickness=1)
+            e.pack()
+            e.bind("<Return>", lambda _: self._solve())
+            tk.Label(cf, text="mm", font=(FNT,8), fg=MUTED, bg=CARD).pack()
 
-        self.visualizer = ArmVisualizer(right)
-        self.visualizer.pack(fill="both", expand=True)
+        tr = tk.Frame(card, bg=CARD); tr.pack(padx=12, pady=(0,10))
+        tk.Label(tr, text="Motion time:", font=(FNT,9), fg=MUTED, bg=CARD
+                 ).pack(side="left")
+        self._tv = tk.StringVar(value="3.0")
+        tk.Entry(tr, textvariable=self._tv, width=6,
+                 font=(FNT,10), bg=INPUT, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1
+                 ).pack(side="left", padx=6)
+        tk.Label(tr, text="seconds", font=(FNT,9), fg=MUTED, bg=CARD
+                 ).pack(side="left")
 
-        # ── Coordinate reference card ─────────────────────────────────────────
-        ref = tk.Frame(right, bg=CARD,
-                       highlightbackground=BORDER, highlightthickness=1)
-        ref.pack(fill="x", pady=(8,0))
-        lbl(ref, "COORDINATE SYSTEM REFERENCE", size=9,
-            color=MUTED, bg=CARD).pack(anchor="w", padx=12, pady=(8,4))
-        ref_row = tk.Frame(ref, bg=CARD)
-        ref_row.pack(fill="x", padx=12, pady=(0,10))
-        for axis, color, desc in [
-            ("X →", ACCENT, "Forward from base"),
-            ("Y →", BLUE,   "Left from base"),
-            ("Z ↑", YELLOW, "Up (vertical)"),
-        ]:
-            f = tk.Frame(ref_row, bg=CARD)
-            f.pack(side="left", padx=16)
-            lbl(f, axis, size=12, color=color, bold=True, bg=CARD).pack()
-            lbl(f, desc, size=9, color=MUTED, bg=CARD).pack()
+        br = tk.Frame(parent, bg=BG); br.pack(fill="x", pady=(0,6))
+        self._bsolve = self._btn(br,"🔍  SOLVE IK",BLUE, BG,   self._solve)
+        self._bsolve.pack(side="left", padx=(0,5))
+        self._bexec  = self._btn(br,"▶  EXECUTE",  ACCENT,BG,  self._execute,
+                                 state="disabled")
+        self._bexec.pack(side="left", padx=(0,5))
+        self._btn(br,"■  STOP",  RED,   TEXT, self._stop).pack(side="left",padx=(0,5))
+        self._btn(br,"HOME",     PANEL, MUTED,self._home).pack(side="left")
 
-    # ── Connection ────────────────────────────────────────────────────────────
+        self._lbl_ik = tk.Label(parent, text="Enter X/Y/Z and press SOLVE IK  ·  then EXECUTE",
+                                font=(FNT,9), fg=MUTED, bg=BG, anchor="w", wraplength=410)
+        self._lbl_ik.pack(fill="x", pady=(0,3))
+
+        self._pv = tk.DoubleVar(value=0)
+        style = ttk.Style()
+        style.configure("C.Horizontal.TProgressbar",
+                        troughcolor=INPUT, background=ACCENT, bordercolor=BORDER)
+        ttk.Progressbar(parent, variable=self._pv, maximum=100,
+                        style="C.Horizontal.TProgressbar"
+                        ).pack(fill="x", pady=(0,8))
+
+        tk.Label(parent, text="IK SOLUTION  —  per motor",
+                 font=(FNT,8,"bold"), fg=MUTED, bg=BG
+                 ).pack(anchor="w", pady=(0,3))
+        self._tbl = IKTable(parent)
+        self._tbl.pack(fill="x")
+
+        # Reachable Presets!
+        pc = tk.Frame(parent, bg=CARD,
+                      highlightbackground=BORDER, highlightthickness=1)
+        pc.pack(fill="x", pady=(10,0))
+        tk.Label(pc, text="QUICK PRESETS",
+                 font=(FNT,8,"bold"), fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(7,4))
+        pg = tk.Frame(pc, bg=CARD); pg.pack(padx=10, pady=(0,8))
+        presets = [
+            ("Reach Fwd",  "300", "  0", "300"),
+            ("Reach Left", "  0", "300", "300"),
+            ("Reach Right","  0","-300", "300"),
+            ("High Fwd",   "200", "  0", "400"),
+            ("Low Fwd",    "400", "  0", "150"),
+            ("Diagonal",   "200", "200", "300"),
+        ]
+        for idx, (nm, x, y, z) in enumerate(presets):
+            def _cb(nx=x,ny=y,nz=z):
+                self._xv.set(nx.strip())
+                self._yv.set(ny.strip())
+                self._zv.set(nz.strip())
+                self._solve()
+            tk.Button(pg, text=nm, font=(FNT,8),
+                      bg=INPUT, fg=TEXT, activebackground=BORDER,
+                      relief="flat", cursor="hand2",
+                      padx=8, pady=4, command=_cb
+                      ).grid(row=idx//3, column=idx%3, padx=3, pady=2, sticky="ew")
+        for c in range(3): pg.columnconfigure(c, weight=1)
+
+    def _build_viz_panel(self, parent):
+        tk.Label(parent, text="ARM VISUALIZATION  —  live kinematic display",
+                 font=(FNT,9,"bold"), fg=DIM, bg=BG
+                 ).pack(anchor="w", pady=(0,4))
+
+        leg = tk.Frame(parent, bg=PANEL); leg.pack(fill="x", pady=(0,5))
+        for i, nm in enumerate(_JNAMES):
+            f = tk.Frame(leg, bg=PANEL); f.pack(side="left", padx=8, pady=4)
+            tk.Frame(f, bg=JCOLORS[i], width=12, height=12
+                     ).pack(side="left", padx=(0,3))
+            tk.Label(f, text=f"M{i+1} {nm}",
+                     font=(FNT,8), fg=JCOLORS[i], bg=PANEL).pack(side="left")
+        tf = tk.Frame(leg, bg=PANEL); tf.pack(side="right", padx=10, pady=4)
+        tk.Label(tf, text="⊕ TARGET", font=(FNT,8), fg=GREEN, bg=PANEL).pack()
+
+        self._viz = ArmVisualizer(parent)
+        self._viz.pack(fill="both", expand=True)
+
+    @staticmethod
+    def _btn(parent, text, bg, fg, cmd, state="normal"):
+        return tk.Button(parent, text=text, font=(FNT,9,"bold"),
+                         bg=bg, fg=fg, activebackground=bg,
+                         relief="flat", cursor="hand2",
+                         command=cmd, padx=10, pady=5, state=state)
+
+    def _solve(self):
+        try:
+            x = float(self._xv.get()) / 1000.0
+            y = float(self._yv.get()) / 1000.0
+            z = float(self._zv.get()) / 1000.0
+        except ValueError:
+            messagebox.showerror("Input Error", "X, Y, Z must be numbers.")
+            return
+
+        tgt = [x, y, z]
+        self._viz.set_target(tgt)
+        self._bsolve.config(state="disabled", text="SOLVING…")
+        self._lbl_ik.config(text="Running IK solver…", fg=YELLOW)
+        self._log(f"IK solve → X={x*1e3:+.1f}  Y={y*1e3:+.1f}  Z={z*1e3:+.1f} mm")
+        threading.Thread(target=self._solve_bg, args=(tgt,), daemon=True).start()
+
+    def _solve_bg(self, tgt):
+        angles, err, ok = _ik(tgt, start_deg=self._cur_ang)
+        self.after(0, lambda: self._solve_done(tgt, angles, err, ok))
+
+    def _solve_done(self, tgt, angles, err, ok):
+        self._bsolve.config(state="normal", text="🔍  SOLVE IK")
+        if not ok:
+            self._lbl_ik.config(
+                text=f"⚠  IK failed — target may be out of reach  (error: {err*1000:.1f} mm)",
+                fg=RED)
+            self._log(f"IK failed — err={err*1000:.1f}mm", "err")
+            self._bexec.config(state="disabled")
+            return
+
+        self._ik_ang = list(angles)
+        self._ik_err = err
+
+        try:
+            t = max(0.1, float(self._tv.get()))
+        except ValueError:
+            t = 3.0
+
+        speeds = []
+        for i in range(6):
+            d   = abs(angles[i] - self._cur_ang[i])
+            spd = max(1.0, min(d/t if t>0 else _SPEED_LIMITS[i],
+                               _SPEED_LIMITS[i]))
+            speeds.append(spd)
+            self._tbl.update_row(i, self._cur_ang[i], angles[i], spd)
+
+        self._viz.set_angles(angles, duration=1.0, target_xyz=tgt)
+
+        col = GREEN if err < 0.001 else (YELLOW if err < 0.005 else ORANGE)
+        self._lbl_ik.config(
+            text=f"✓ IK solved  —  error: {err*1000:.2f} mm  |  "
+                 f"time: {t:.1f}s  |  max speed: {max(speeds):.0f}°/s",
+            fg=col)
+        self._log("IK OK — " +
+                  "  ".join(f"M{i+1}:{angles[i]:+.1f}°" for i in range(6)))
+        self._bexec.config(state="normal")
+
+    def _execute(self):
+        if self._ik_ang is None or self._executing: return
+
+        robot = self.robot
+        try:
+            t = max(0.1, float(self._tv.get()))
+        except ValueError:
+            t = 3.0
+
+        if not robot:
+            self._executing = True
+            self._bexec.config(state="disabled", text="EXECUTING…")
+            self._pv.set(0)
+            target = list(self._ik_ang)
+            self._viz.set_angles(target, duration=t)
+            self._log(f"[SIM] Animating {t:.1f}s")
+            t0 = time.time()
+            def tick():
+                el = time.time()-t0
+                self._pv.set(min(el/t*100, 100))
+                if el < t: self.after(80, tick)
+            tick()
+            def done():
+                time.sleep(t+0.25)
+                self.after(0, self._exec_done, target)
+            threading.Thread(target=done, daemon=True).start()
+            return
+
+        self._executing = True
+        self._bexec.config(state="disabled", text="EXECUTING…")
+        self._pv.set(0)
+        threading.Thread(target=self._exec_bg,
+                         args=(robot, list(self._ik_ang), t),
+                         daemon=True).start()
+
+    def _exec_bg(self, robot, angles, t):
+        from robot_controller import DEFAULT_JOINT_CONFIG
+        for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+            d   = abs(angles[i] - self._cur_ang[i])
+            spd = max(1.0, min(d/t, _SPEED_LIMITS[i]))
+            robot.motors[cfg.motor_id].set_position(
+                float(angles[i]), max_speed_dps=float(spd), wait=False)
+            time.sleep(0.001)
+        self.after(0, lambda: self._viz.set_angles(angles, duration=t))
+        t0 = time.time()
+        while True:
+            el = time.time()-t0
+            self.after(0, lambda p=min(el/t*100,100): self._pv.set(p))
+            if el >= t+0.5: break
+            time.sleep(0.05)
+        self.after(0, self._exec_done, angles)
+
+    def _exec_done(self, final):
+        self._cur_ang = list(final)
+        self._tbl.set_current(final)
+        self._executing = False
+        self._pv.set(100)
+        self._bexec.config(state="normal", text="▶  EXECUTE")
+        self._lbl_ik.config(text="✓ Motion complete.", fg=GREEN)
+        self._log("Motion complete.")
+
+    def _stop(self):
+        robot = self.robot
+        if robot:
+            threading.Thread(target=robot.stop_all, daemon=True).start()
+        self._executing = False
+        self._pv.set(0)
+        self._viz._cancel_anim()
+        self._bexec.config(
+            state="normal" if self._ik_ang else "disabled",
+            text="▶  EXECUTE")
+        self._log("STOP.")
+
+    def _home(self):
+        self._xv.set("300"); self._yv.set("0"); self._zv.set("300")
+        self._ik_ang  = [0.0]*6
+        self._cur_ang = [0.0]*6
+        self._viz.set_angles([0.0]*6, duration=1.5)
+        self._viz.clear_target()
+        self._tbl.set_current([0.0]*6)
+        for i in range(6): self._tbl.update_row(i,0,0,0)
+        robot = self.robot
+        if robot:
+            threading.Thread(target=robot.go_home,
+                             kwargs={"speed_dps":60,"wait":False},
+                             daemon=True).start()
+        self._lbl_ik.config(text="Homing…", fg=DIM)
+        self._log("Homing.")
+
+    # ── Connection ─────────────────────────────────────────────────────────────
 
     def _connect(self):
+        if not HAS_ROBOT:
+            self._lbl_c.config(text="● VISUAL SIM", fg=YELLOW)
+            self._log("Robot modules not available — visual simulation only.", "warn")
+            return
+        threading.Thread(target=self._connect_bg, daemon=True).start()
+
+    def _connect_bg(self):
         try:
-            self.bus = CANBus(simulated=self._sim, channel=self._port,
-                              bustype=self._bus_t, num_motors=6)
+            self.bus   = CANBus(simulated=self._sim, channel=self._port,
+                                bustype=self._bus_t, num_motors=6)
             self.robot = RobotController(self.bus, DEFAULT_JOINT_CONFIG)
             self.robot.start()
-            self.lbl_conn.config(text="● CONNECTED", fg=ACCENT)
-            self._start_monitor()
+            self._connected = True
+            self.after(0, self._conn_ok)
         except Exception as e:
-            messagebox.showerror("Connection Failed", str(e))
+            self.after(0, lambda: self._conn_fail(str(e)))
+
+    def _conn_ok(self):
+        self._lbl_c.config(text="● CONNECTED", fg=ACCENT)
+        self._log("Connected — all 6 motors enabled.", "ok")
+        self._start_monitor()
+
+    def _conn_fail(self, err):
+        self._lbl_c.config(text="● CONN FAILED", fg=RED)
+        self._log(f"Connection failed: {err}", "err")
+        messagebox.showerror("Connection Failed", err)
 
     def _disconnect(self):
         self._stop_monitor()
         if self.robot:
-            self.robot.close()
+            try: self.robot.close()
+            except: pass
             self.robot = None
         self.bus = None
-        self.lbl_conn.config(text="● DISCONNECTED", fg=RED)
+        self._connected = False
+        self._lbl_c.config(text="● DISCONNECTED", fg=RED)
+        self._log("Disconnected.")
 
-    # ── Monitor loop ──────────────────────────────────────────────────────────
-
-    def _get_angles(self):
-        if self.robot:
-            return np.array([
-                self.robot.motors[cfg.motor_id].get_position()
-                for cfg in DEFAULT_JOINT_CONFIG], dtype=float)
-        return np.zeros(6)
+    # ── Monitor (Thread-Safe Fix) ──────────────────────────────────────────────
 
     def _start_monitor(self):
-        self._monitor_job = self.after(100, self._monitor_tick)
+        self._mon_job = self.after(300, self._monitor)
 
     def _stop_monitor(self):
-        if self._monitor_job:
-            self.after_cancel(self._monitor_job)
-            self._monitor_job = None
+        if self._mon_job:
+            self.after_cancel(self._mon_job)
+            self._mon_job = None
 
-    def _monitor_tick(self):
-        """Updates visualizer with live joint angles at ~10 Hz."""
-        angles = self._get_angles()
-        self.visualizer.set_joint_angles(angles)
-        self._monitor_job = self.after(100, self._monitor_tick)
+    def _monitor(self):
+        if self.robot and self._connected:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                # Fix: Use get_all_feedback instead of blocking get_position calls
+                fb_all = self.robot.get_all_feedback()
+                a = []
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    fb = fb_all.get(cfg.motor_id)
+                    a.append(fb.position_deg if fb else self._cur_ang[i])
+                
+                self._cur_ang = list(a)
+                if not self._executing:
+                    self._viz.set_angles(a)
+                self._tbl.set_current(a)
+            except Exception:
+                pass
+        self._mon_job = self.after(300, self._monitor)
 
-    # ── Plan callback — show ghost target on visualizer ───────────────────────
+    # ── Log ────────────────────────────────────────────────────────────────────
 
-    def _on_plan_ready(self, plan: CartesianMotionPlan):
-        """Called by InputPanel when IK completes. Shows ghost arm."""
-        self.visualizer.set_target(
-            plan.target_position_mm,
-            plan.target_angles_deg)
+    def _log(self, msg, tag="info"):
+        ts = time.strftime("%H:%M:%S")
+        self._lbox.config(state="normal")
+        self._lbox.insert("end", f"{ts}  {msg}\n", tag)
+        self._lbox.see("end")
+        self._lbox.config(state="disabled")
 
-    # ── Shutdown ──────────────────────────────────────────────────────────────
+    def _poll_log(self):
+        while not _lq.empty():
+            m = _lq.get_nowait()
+            t = "warn" if "WARNING" in m else ("err" if "ERROR" in m else "info")
+            self._log(m, t)
+        self.after(150, self._poll_log)
 
-    def _on_close(self):
+    def _clear_log(self):
+        self._lbox.config(state="normal")
+        self._lbox.delete("1.0","end")
+        self._lbox.config(state="disabled")
+
+    # ── Close ──────────────────────────────────────────────────────────────────
+
+    def _close(self):
         self._stop_monitor()
         if self.robot:
-            try:
-                self.robot.close()
-            except:
-                pass
+            try: self.robot.close()
+            except: pass
         self.destroy()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Cartesian Control + Live Arm Visualizer")
-    parser.add_argument("--real",    action="store_true")
-    parser.add_argument("--port",    default="COM3")
-    parser.add_argument("--bustype", default="slcan")
-    args = parser.parse_args()
-
-    app = CartesianVisApp(
-        simulated=not args.real,
-        port=args.port,
-        bustype=args.bustype,
-    )
-    app.mainloop()
+    ap = argparse.ArgumentParser(description="6-Axis Cartesian + Visualizer")
+    ap.add_argument("--real",    action="store_true")
+    ap.add_argument("--port",    default="COM3")
+    ap.add_argument("--bustype", default="slcan")
+    args = ap.parse_args()
+    CartesianGUI(simulated=not args.real,
+                 port=args.port, bustype=args.bustype).mainloop()
