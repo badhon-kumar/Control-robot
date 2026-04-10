@@ -1,8 +1,8 @@
 step,delay_s,x_mm,y_mm,z_mm,speed_mms
-Start at Home,1.0,200.0,0.0,400.0,50.0
-Reach Forward,0.5,300.0,0.0,300.0,40.0
-Move Left,0.0,300.0,150.0,300.0,40.0
-Move Right,0.0,300.0,-150.0,300.0,60.0
-Drop Down to Pick,1.5,300.0,-150.0,150.0,20.0
-Raise Back Up,0.5,300.0,-150.0,300.0,30.0
-Return Home,0.0,200.0,0.0,400.0,50.0
+Start at Home,1.0,150.0,0.0,250.0,50.0
+Reach Forward,0.5,200.0,0.0,200.0,40.0
+Move Left,0.0,200.0,100.0,200.0,40.0
+Move Right,0.0,200.0,-100.0,200.0,60.0
+Drop Down to Pick,1.5,200.0,-100.0,100.0,20.0
+Raise Back Up,0.5,200.0,-100.0,200.0,30.0
+Return Home,0.0,150.0,0.0,250.0,50.0

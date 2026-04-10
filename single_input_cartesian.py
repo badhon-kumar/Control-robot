@@ -37,14 +37,14 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 # STANDALONE KINEMATICS (PURE RADIAN + MULTI-SEED)
 # ══════════════════════════════════════════════════════════════════════════════
-
+# The columns are: [theta_offset, d (Z-offset), a (X-length), alpha (twist)]
 _DH_PARAMS = [
-    [  0.0,        0.127,  0.0,    math.pi/2  ],  # Joint 1 — Base
-    [ -math.pi/2,  0.0,    0.300,  0.0        ],  # Joint 2 — Shoulder
-    [  0.0,        0.0,    0.250,  0.0        ],  # Joint 3 — Elbow
-    [  0.0,        0.102,  0.0,    math.pi/2  ],  # Joint 4 — Wrist1
-    [  0.0,        0.102,  0.0,   -math.pi/2  ],  # Joint 5 — Wrist2
-    [  0.0,        0.060,  0.0,    0.0        ],  # Joint 6 — Tool
+    [  0.0,        0.100,  0.0,    math.pi/2  ],  # Joint 1 — Base
+    [ -math.pi/2,  0.0,    0.060,  0.0        ],  # Joint 2 — Shoulder
+    [  0.0,        0.0,    0.100,  0.0        ],  # Joint 3 — Elbow
+    [  0.0,        0.100,  0.0,    math.pi/2  ],  # Joint 4 — Wrist1
+    [  0.0,        0.100,  0.0,   -math.pi/2  ],  # Joint 5 — Wrist2
+    [  0.0,        0.100,  0.0,    0.0        ],  # Joint 6 — Tool
 ]
 
 _JOINT_LIMITS_DEG = [
@@ -370,7 +370,7 @@ class ArmVisualizer(tk.Frame):
 
     def _draw_3d(self, cv, w, h):
         mg  = 36
-        scl = min(w-2*mg, h-2*mg) / 0.85
+        scl = min(w-2*mg, h-2*mg) / 0.55
         cx, cy = w*0.5, h*0.52
 
         step, n = 0.10, 4
@@ -402,8 +402,6 @@ class ArmVisualizer(tk.Frame):
         for i in range(len(proj)-1):
             col = JCOLORS[min(i,5)]
             lw  = 5 if i==0 else (4 if i<4 else 3)
-            cv.create_line(*proj[i], *proj[i+1],
-                           fill="#000000", width=lw+3, capstyle="round")
             cv.create_line(*proj[i], *proj[i+1],
                            fill=col,      width=lw,   capstyle="round")
 
@@ -601,6 +599,12 @@ class CartesianGUI(tk.Tk):
             tk.Label(cf, text="mm", font=(FNT,8), fg=MUTED, bg=CARD).pack()
 
         tr = tk.Frame(card, bg=CARD); tr.pack(padx=12, pady=(0,10))
+        
+        # Adding constraints label
+        tk.Label(card, text="Max reach is a 460mm sphere centered at X=0, Y=0, Z=100mm",
+                 font=(FNT,8,"italic"), fg=YELLOW, bg=CARD
+                 ).pack(anchor="w", padx=12, pady=(0,10))
+
         tk.Label(tr, text="Motion time:", font=(FNT,9), fg=MUTED, bg=CARD
                  ).pack(side="left")
         self._tv = tk.StringVar(value="3.0")
@@ -667,6 +671,18 @@ class CartesianGUI(tk.Tk):
                       padx=8, pady=4, command=_cb
                       ).grid(row=idx//3, column=idx%3, padx=3, pady=2, sticky="ew")
         for c in range(3): pg.columnconfigure(c, weight=1)
+
+        # ── CSV Sequence Panel ──
+        cc = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        cc.pack(fill="x", pady=(10,0))
+        tk.Label(cc, text="CARTESIAN CSV SEQUENCE", font=(FNT,8,"bold"), fg=MUTED, bg=CARD).pack(anchor="w", padx=10, pady=(7,4))
+
+        cf = tk.Frame(cc, bg=CARD); cf.pack(fill="x", padx=10, pady=(0,8))
+        self._csv_path = tk.StringVar()
+        tk.Entry(cf, textvariable=self._csv_path, font=(FNT,9), bg=INPUT, fg=TEXT, insertbackground=TEXT, relief="flat", highlightbackground=BORDER, highlightthickness=1).pack(side="left", fill="x", expand=True, padx=(0,5))
+        self._btn(cf,"BROWSE", BLUE, BG, self._browse_csv).pack(side="left", padx=2)
+        self._bcsv_run = self._btn(cf,"RUN", GREEN, BG, self._run_csv, state="disabled")
+        self._bcsv_run.pack(side="left", padx=2)
 
     def _build_viz_panel(self, parent):
         tk.Label(parent, text="ARM VISUALIZATION  —  live kinematic display",
@@ -838,6 +854,92 @@ class CartesianGUI(tk.Tk):
                              daemon=True).start()
         self._lbl_ik.config(text="Homing…", fg=DIM)
         self._log("Homing.")
+
+    def _browse_csv(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("CSV","*.csv")])
+        if path:
+            self._csv_path.set(path)
+            self._bcsv_run.config(state="normal")
+
+    def _run_csv(self):
+        path = self._csv_path.get()
+        import csv
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as e:
+            messagebox.showerror("CSV Error", str(e))
+            return
+        
+        self._executing = True
+        self._bcsv_run.config(state="disabled", text="RUNNING...")
+        self._bexec.config(state="disabled")
+        threading.Thread(target=self._run_csv_bg, args=(rows,), daemon=True).start()
+
+    def _run_csv_bg(self, rows):
+        import math
+        self._log(f"Started CSV Sequence. Steps: {len(rows)}", "ok")
+        for i, r in enumerate(rows):
+            if not self._executing: break
+            step = r.get("step", f"Step {i+1}")
+            try:
+                delay = float(r.get("delay_s", 0))
+                x = float(r.get("x_mm", 0)) / 1000.0
+                y = float(r.get("y_mm", 0)) / 1000.0
+                z = float(r.get("z_mm", 0)) / 1000.0
+                speed = float(r.get("speed_mms", 50))
+            except Exception as e:
+                self._log(f"[{step}] Parse err: {e}", "err")
+                continue
+
+            tgt = [x, y, z]
+            self._log(f"[{step}] X:{x*1000:.0f} Y:{y*1000:.0f} Z:{z*1000:.0f} @{speed}mm/s")
+            angles, err, ok = _ik(tgt, start_deg=self._cur_ang)
+            if not ok:
+                self._log(f"[{step}] IK Failed! err={err*1000:.1f}mm", "err")
+                break
+                
+            _, pts = _fk(self._cur_ang)
+            curr_xyz = pts[-1]
+            dist_mm = math.dist(curr_xyz, tgt) * 1000.0
+            t = dist_mm / speed if speed > 0 else 2.0
+            if t < 0.1: t = 0.5
+            
+            robot = self.robot
+            if robot:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                for j, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    d = abs(angles[j] - self._cur_ang[j])
+                    spd = max(1.0, min(d/t, _SPEED_LIMITS[j]))
+                    robot.motors[cfg.motor_id].set_position(
+                        float(angles[j]), max_speed_dps=float(spd), wait=False)
+                    time.sleep(0.001)
+
+            self.after(0, lambda a=angles, tc=t, tg=tgt: self._viz.set_angles(a, duration=tc, target_xyz=tg))
+            
+            el = 0.0
+            while el < t + 0.1:
+                if not self._executing: break
+                time.sleep(0.1)
+                el += 0.1
+                
+            self._cur_ang = list(angles)
+            self.after(0, lambda a=angles: self._tbl.set_current(a))
+            
+            if delay > 0 and self._executing:
+                self._log(f"[{step}] Delay {delay}s")
+                el = 0.0
+                while el < delay:
+                    if not self._executing: break
+                    time.sleep(0.1)
+                    el += 0.1
+
+        self._log("CSV Sequence Complete.", "ok")
+        self._executing = False
+        self.after(0, lambda: self._bcsv_run.config(state="normal", text="RUN"))
+        self.after(0, lambda: self._bexec.config(state="normal" if self._ik_ang else "disabled"))
 
     # ── Connection ─────────────────────────────────────────────────────────────
 
