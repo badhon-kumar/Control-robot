@@ -1,8 +1,8 @@
 \documentclass{article}
-\usepackage[margin=1in]{geometry} % Fixes wide margins
+\usepackage[margin=1in]{geometry}
 \usepackage{graphicx}
 \usepackage{amsmath}
-\usepackage{float} % Required to force exact placement with [H]
+\usepackage{float}
 \usepackage{tikz}
 \usetikzlibrary{shapes, arrows, positioning}
 
@@ -12,7 +12,7 @@
 
 \begin{document}
 
-\maketitle % Moved here so it prints at the very beginning
+\maketitle
 
 \section{Power Supply and Control System Design}
 
@@ -27,305 +27,172 @@ P_{total} = 6 \times 600 = 3600 \text{ W}
 \end{equation}
 
 \noindent
-At 110V, a 3600W load draws approximately 32.7A, which significantly exceeds the 15A to 20A capacity of a standard 110V wall outlet. To prevent tripping the facility's circuit breakers under maximum load, a dual-mitigation strategy is implemented:
-
-\begin{itemize}
-    \item \textbf{Hardware Mitigation (Dual-Circuit Routing):} To safely supply the necessary current, the AC-DC power supplies are split across two separate AC input cables. These cables must be plugged into receptacles that reside on completely independent 20A electrical breakers, effectively dividing the 40A load into two manageable 20A circuits.
-    \item \textbf{Software Mitigation (Active Current Clamping):} To ensure the system can safely operate even if restricted to a single 15A circuit, the central CAN controller dynamically clamps the \texttt{max\_current} command sent to the motor drivers. By mathematically limiting the simultaneous acceleration current in software, the robot's physical acceleration is slightly reduced, but the total power draw is strictly restricted to remain under 1650W (15A).
-\end{itemize}
+At 110V AC, each 1200W PSU draws approximately 11--12A at full capacity. With four PSUs operating in parallel, the total peak system current draw from the 110V AC mains will be approximately 44--48A.
 
 \noindent
-This modular configuration improves reliability, thermal performance, and ease of maintenance. The selected 48V AC-DC power supplies feature active current sharing (parallel function) to ensure the load is balanced equally across all units.
+Due to this significant current draw, attempting to split the load across standard 15A or 20A wall receptacles is an unacceptable fire hazard and violates electrical safety standards. Therefore, \textbf{a dedicated 60A AC double-pole circuit breaker is strictly required} at the facility's main electrical panel. Furthermore, the AC wiring feeding the power supplies must utilize a minimum of 6 AWG copper wire to safely carry the 48A load without overheating or causing severe voltage drop.
+
+\noindent
+This modular configuration improves reliability, thermal performance, and ease of maintenance. The selected 48V AC-DC power supplies feature active current sharing (parallel function) to ensure the load is balanced equally across all four units.
 
 \subsection{Power Distribution}
-The DC outputs from the power supplies are connected to a common DC busbar. Power is distributed from the busbar to each motor through individual protection elements. Each motor line includes:
-
-\begin{itemize}
-    \item A fuse rated between 20--30A
-    \item Appropriately sized cables (10--12 AWG)
-\end{itemize}
+The DC outputs from the power supplies are connected to a common DC busbar. Crucially, all DC cables routing from the four PSUs to the positive and negative busbars must be of exactly equal length and gauge. Electricity follows the path of least resistance; if cable lengths differ, the PSU with the shortest cable will absorb the majority of the current load, leading to premature thermal failure.
 
 \noindent
-A circuit breaker is installed on the AC side, and an emergency stop switch is included for safety.
+To handle large transient voltage spikes and absorb regenerative braking energy from the motors, a bulk capacitor bank (consisting of twelve 4700$\mu$F 63V capacitors) is placed directly on the busbars. This bank must be positioned \textbf{before} the main circuit protection. If placed after the breaker, a downstream short-circuit would bypass the breaker entirely as the capacitors discharge their stored energy directly into the fault. 
+
+\noindent
+Power is then routed through a 150A marine circuit breaker to a 6-way fuse box. Each individual motor line includes:
+
+\begin{itemize}
+    \item A 20A fuse in the 6-way distribution block.
+    \item A 1000 $\mu$F / 100V low-ESR capacitor placed directly at the motor (or fuse box output). This local decoupling is mandatory to suppress violent inductive voltage spikes caused by the motors' high-frequency PWM switching, preventing electromagnetic interference (EMI) from crashing the CAN bus.
+    \item Appropriately sized cables.
+\end{itemize}
 
 \subsection{Control System}
 The motors are controlled using a Controller Area Network (CAN) communication protocol. A central controller (microcontroller or PC with CAN interface) sends commands to all motors through a shared CAN bus.
 
-All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termination resistors are placed at both ends of the CAN bus to ensure signal integrity.
+\noindent
+All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termination resistors are placed at both ends of the CAN bus to ensure signal integrity and eliminate high-frequency signal reflections.
 
 \subsection{System Advantages}
 \begin{itemize}
-    \item Continuous operation without battery dependency
-    \item Modular and scalable power design
-    \item Robust and noise-resistant CAN communication
-    \item Enhanced safety through dual-circuit routing and active current clamping
+    \item Continuous, high-torque operation without battery dependency or degradation.
+    \item Elimination of nuisance tripping and fire hazards via properly sized 60A facility infrastructure.
+    \item Safe handling of short-circuits via strategic bulk-capacitor placement before the main breaker.
+    \item Robust and noise-resistant CAN communication protected by local motor decoupling capacitors.
 \end{itemize}
 
-\begin{figure}[H]
-\centering
-\begin{tikzpicture}[
-    % Global spacing
-    node distance=1cm and 1cm,
-    % Professional styles
-    block/.style={rectangle, draw, rounded corners, align=center, minimum width=3cm, minimum height=1cm},
-    smallblock/.style={rectangle, draw, align=center, minimum width=1.6cm, minimum height=0.8cm},
-    busbar/.style={rectangle, draw, fill=gray!10, minimum width=12.5cm, minimum height=0.6cm},
-    line/.style={draw, thick, -latex},
-    dashedline/.style={draw, thick, dashed, -latex}
-]
-
-% 1. Power Architecture (Center Column)
-\node[block] (ac) {AC Mains\\110V};
-\node[block, below=0.8cm of ac] (cb) {Dual Circuit\\Breakers};
-
-\node[block, below=1cm of cb] (psu2) {48V PSU\\40A};
-\node[block, left=0.8cm of psu2] (psu1) {48V PSU\\40A};
-\node[block, right=0.8cm of psu2] (psu3) {48V PSU\\40A};
-
-% Wide busbar spans the width of the motor array
-\node[busbar, below=1.2cm of psu2] (bus) {\textbf{48V DC Busbar}};
-
-% 2. Motors (Evenly spaced bottom row)
-\node[smallblock, below left=1.2cm and 0.3cm of bus.south] (m3) {Motor 3};
-\node[smallblock, left=0.5cm of m3] (m2) {Motor 2};
-\node[smallblock, left=0.5cm of m2] (m1) {Motor 1};
-
-\node[smallblock, below right=1.2cm and 0.3cm of bus.south] (m4) {Motor 4};
-\node[smallblock, right=0.5cm of m4] (m5) {Motor 5};
-\node[smallblock, right=0.5cm of m5] (m6) {Motor 6};
-
-% 3. Control System (Shifted left to prevent crossing the power lines)
-\node[block, left=3.5cm of cb] (can) {CAN Interface};
-\node[block, above=0.8cm of can] (controller) {Controller\\(PC / MCU)};
-
-% 4. Power Wiring (Solid lines)
-\path[line] (ac) -- (cb);
-\path[line] (cb) -- (psu2);
-\path[line] (cb) -| (psu1);
-\path[line] (cb) -| (psu3);
-
-% Straight drops from PSUs to the Busbar
-\path[line] (psu1) -- (psu1 |- bus.north);
-\path[line] (psu2) -- (psu2 |- bus.north);
-\path[line] (psu3) -- (psu3 |- bus.north);
-
-% Straight vertical drops from the Busbar to each Motor
-\foreach \m in {m1, m2, m3, m4, m5, m6} {
-    \path[line] (bus.south -| \m) -- (\m.north);
-}
-
-% 5. Control Wiring (Dashed Daisy-Chain)
-\path[dashedline] (controller) -- (can);
-\path[dashedline] (can) |- (m1.west);
-\path[dashedline] (m1.east) -- (m2.west);
-\path[dashedline] (m2.east) -- (m3.west);
-\path[dashedline] (m3.east) -- (m4.west);
-\path[dashedline] (m4.east) -- (m5.west);
-\path[dashedline] (m5.east) -- (m6.west);
-
-\end{tikzpicture}
-\caption{Combined power supply and control architecture for six 48V motors (solid lines: power, dashed lines: CAN communication)}
-\end{figure}
-
-\section{Required list of Components}
-
-\subsection*{ Power}
-\begin{itemize}
-    \item 48V DC Power Supply (total $\sim$4.5 kW)
-    \item AC input cables (x2 for dual-circuit routing)
-    \item Circuit breaker (AC side)
-\end{itemize}
-
-\subsection*{ Distribution}
-\begin{itemize}
-    \item DC busbar / terminal block
-    \item DC fuses (6x)
-    \item Emergency stop switch
-\end{itemize}
-
-\subsection*{ Control}
-\begin{itemize}
-    \item Microcontroller / PC
-    \item CAN interface module
-\end{itemize}
-
-\subsection*{ Communication}
-\begin{itemize}
-    \item CAN cables
-    \item 120$\Omega$ resistors
-\end{itemize}
-
-\subsection*{ Actuation}
-\begin{itemize}
-    \item 6 $\times$ RMD-X8-120 motors
-\end{itemize}
-
-\subsection*{ Misc}
-\begin{itemize}
-    \item Enclosure
-    \item Cooling fans
-    \item Connectors
-    \item Thick power cables
-\end{itemize}
-
-\subsection*{Optional}
-\begin{itemize}
-    \item DC bus voltage monitor
-    \item Braking resistor module (48V compatible)
-\end{itemize}
-
-\subsection{Design Justification}
-
-A parallel power supply configuration was selected to enhance system reliability and scalability. Instead of relying on a single high-power unit, multiple lower-rated supplies distribute the thermal and electrical load, reducing the risk of total system failure.
-
-\noindent
-The use of a CAN-based communication network ensures robust and noise-resistant control, which is essential in high-current environments. Additionally, the elimination of a battery bank reduces maintenance requirements and improves long-term operational stability.
-
-\noindent
-The inclusion of protection elements such as circuit breakers and individual fuses ensures safe operation under fault conditions, making the system suitable for industrial and robotic applications.
-
-\section{Practical Design and Hardware choice}
+\section{Practical Design and Hardware Choice}
 
 \begin{figure}[H]
 \centering
 \begin{tikzpicture}[
     component/.style={rectangle, draw=black, rounded corners, align=center, minimum width=2.6cm, minimum height=1.2cm, fill=white, thick},
-    busbar_pos/.style={rectangle, draw=red!80!black, thick, fill=red!10, minimum width=3.5cm, minimum height=0.6cm, align=center},
-    busbar_neg/.style={rectangle, draw=black, thick, fill=gray!20, minimum width=3.5cm, minimum height=0.6cm, align=center},
-    smallnode/.style={rectangle, draw=black, align=center, minimum width=1.1cm, minimum height=0.7cm, font=\small},
-    line/.style={draw, thick, -latex},
+    smallnode/.style={rectangle, draw=black, align=center, minimum width=1.4cm, minimum height=0.8cm, font=\scriptsize, fill=white},
+    heavyline/.style={draw, line width=1.5pt, -latex},
     posline/.style={draw, red, thick, -latex},
     negline/.style={draw, black, thick, -latex},
     heavyposline/.style={draw, red, line width=1.5pt, -latex},
-    heavynegline/.style={draw, black, line width=1.5pt, -latex}
+    heavynegline/.style={draw, black, line width=1.5pt, -latex},
+    jump/.style={preaction={draw, white, line width=4pt}}
 ]
 
-% Components Outside - Top
-\node[component] (ac) at (0, 8.5) {AC Mains\\(110V)};
+% ─── Enclosure Boundary ──────────────────────────────────────────────
+\draw[very thick, dotted, rounded corners, fill=blue!3] (-6.7, 4.8) rectangle (6.7, -2.8);
+\node[anchor=south west, font=\bfseries] at (-8.6, 4.9) {12"x12"x6" ABS \hspace{6.mm} Enclosure};
 
-% Four PSUs in Parallel
-\node[component] (psu1) at (-4.5, 6.5) {48V PSU 1};
-\node[component] (psu2) at (-1.5, 6.5) {48V PSU 2};
-\node[component] (psu3) at (1.5, 6.5) {48V PSU 3};
-\node[component] (psu4) at (4.5, 6.5) {48V PSU 4};
+% ─── AC Input (Top) ──────────────────────────────────────────────────
+\node[component] (ac) at (0, 11.0) {AC Mains (110V)};
+\node[component] (ac_breaker) at (0, 9.0) {Dedicated 60A AC Breaker\\(min. 6 AWG copper)};
 
-\node[component] (breaker) at (-1.5, 2.5) {150A Marine\\Breaker};
+\draw[heavyline] (ac) -- (ac_breaker);
+\draw[thick] (ac_breaker.south) -- (0, 7.8);
 
-% Enclosure Boundary
-\coordinate (box_tl) at (-4.6, 0.5);
-\coordinate (box_br) at (4.6, -4.2);
-\draw[very thick, dotted, rounded corners, fill=blue!2] (box_tl) rectangle (box_br);
-\node[anchor=south west, font=\bfseries] at (-0.9, 0.6) {12"x12"x6" ABS Enclosure};
-
-% Inside the Enclosure: Centered Busbars
-\node[busbar_pos] (bus_red) at (0, -0.4) {Positive Busbar};
-\node[busbar_neg] (bus_blk) at (0, -1.4) {Negative Busbar};
-
-% Inside the Enclosure: Offset Components
-\node[component] (caps) at (-2.8, -3.0) {4700$\mu$F 63V\\Cap Bank};
-\node[component] (fusebox) at (2.8, -3.0) {Chatovalo\\6-Way Fuse Box};
-
-% Actuation - Bottom Row
-\node[smallnode] (m1) at (-3.75, -6.5) {Motor 1};
-\node[smallnode] (m2) at (-2.25, -6.5) {Motor 2};
-\node[smallnode] (m3) at (-0.75, -6.5) {Motor 3};
-\node[smallnode] (m4) at (0.75, -6.5) {Motor 4};
-\node[smallnode] (m5) at (2.25, -6.5) {Motor 5};
-\node[smallnode] (m6) at (3.75, -6.5) {Motor 6};
-
-% Wiring: AC to PSUs (Splitting the mains)
-\draw[thick] (ac.south) -- (0, 7.5);
-\draw[thick] (-4.5, 7.5) -- (4.5, 7.5);
-\draw[line] (-4.5, 7.5) -- (psu1.north);
-\draw[line] (-1.5, 7.5) -- (psu2.north);
-\draw[line] (1.5, 7.5) -- (psu3.north);
-\draw[line] (4.5, 7.5) -- (psu4.north);
-
-% Wiring: PSUs down to Parallel DC Gathering Lines
-\draw[draw=red, line width=1.5pt] (-5.0, 5.0) -- (4.0, 5.0); % Horizontal Positive Gathering Bus
-\draw[draw=black, line width=1.5pt] (-4.0, 4.2) -- (5.0, 4.2); % Horizontal Negative Gathering Bus
-
-\foreach \p in {psu1, psu2, psu3, psu4} {
-    % Positive drops from PSU down to the red line
-    \draw[posline] ([xshift=-0.5cm]\p.south) -- ([xshift=-0.5cm]\p.south |- 0, 5.0) node[midway, left, font=\tiny] {+};
-    % Negative returns from the black line back up to the PSU
-    \draw[negline] ([xshift=0.5cm]\p.south |- 0, 4.2) -- ([xshift=0.5cm]\p.south) node[midway, right, font=\tiny] {-};
+% ─── PSUs (Pushed down for balanced spacing) ─────────────────────────
+\foreach \x/\i in {-5.0/1, -2.0/2, 1.0/3, 4.0/4} {
+    \node[component] (psu\i) at (\x, 6.2) {48V PSU \i};
+    \draw[heavyline] (0, 7.8) -| (psu\i.north);
 }
 
-% Wiring: DC Gathering Lines to Enclosure (Heavy Main Lines)
-% Preaction adds a white gap where the red line crosses the black horizontal bus
-\draw[heavyposline, preaction={draw, white, line width=4pt}] (-1.5, 5.0) -- (breaker.north);
-\draw[heavyposline] (breaker.south) -- (breaker.south |- bus_red.north);
+% ─── Busbars (Pushed down for balanced spacing) ──────────────────────
+\draw[red!80!black, thick, fill=red!10] (-5.8, 3.4) rectangle (4.5, 4.0) node[midway, font=\small\bfseries, text=red!80!black] {Positive Busbar};
+\draw[black, thick, fill=gray!20] (-5.8, 2.2) rectangle (4.5, 2.8) node[midway, font=\small\bfseries, text=black] {Negative Busbar};
 
-% Wiring: Negative Return from Enclosure back up to the Negative Gathering Bus
-\draw[heavynegline] (bus_blk.east) -| (5.0, 4.2); 
+% \node[font=\footnotesize, text=red, fill=blue!3] at (-1.5, 4.5) {(All PSUs connect to busbars via equal-length 2/0 AWG DC cables)};
 
-% Wiring: Busbars to Capacitor 
-% Positive flows INTO the capacitor
-\draw[heavyposline] (bus_red.west) -| ([xshift=-0.4cm]caps.north);
-% Negative flows OUT OF the capacitor back to the busbar
-\draw[heavynegline] ([xshift=0.4cm]caps.north) |- (bus_blk.west);
-
-% Wiring: Red Busbar to Fuse Box 
-\draw[heavyposline] (bus_red.east) -| (fusebox.north);
-
-% Wiring: Fuse Box to Motors (Branching Positive Lines)
-\coordinate (fuse_drop) at (2.8, -4.8);
-\draw[posline, thick] (fusebox.south) -- (fuse_drop);
-\foreach \m in {m1, m2, m3, m4, m5, m6} {
-    \draw[posline] (fuse_drop) -| ([xshift=0.3cm]\m.north);
+% ─── PSU Drops to Busbars ────────────────────────────────────────────
+\foreach \x/\i in {-5.0/1, -2.0/2, 1.0/3, 4.0/4} {
+    % Positive Drop (Red) - Tightened spacing
+    \draw[heavyposline] ([xshift=-0.25cm]\x, 5.6) -- ([xshift=-0.25cm]\x, 4.0);
+    
+    % Negative Return (Black) - Flows UP to PSU, jumping cleanly over Positive Busbar
+    \draw[heavynegline, jump] ([xshift=0.25cm]\x, 2.8) -- ([xshift=0.25cm]\x, 5.6);
 }
 
-% Wiring: Motors returning to Negative Busbar
-\coordinate (neg_drop) at (0, -5.6);
-\foreach \m in {m1, m2, m3, m4, m5, m6} {
-    % Arrows flow UP from the motors to the drop line
-    \draw[negline] ([xshift=-0.3cm]\m.north) |- (neg_drop);
+% ─── Enclosure Components ────────────────────────────────────────────
+% Bulk Caps (Safely BEFORE breaker, bridging busbars on the far right)
+\node[component, minimum width=1.8cm, minimum height=1.4cm, font=\scriptsize] (caps) at (5.6, 3.1) {Bulk Cap\\12$\times$ 4700$\mu$F};
+\draw[heavyposline] (4.5, 3.7) -- (4.7, 3.7); % Connects Pos busbar to caps
+\draw[heavynegline] (4.5, 2.5) -- (4.7, 2.5); % Connects Neg busbar to caps
+
+% Main Breaker (Far left)
+\node[component] (breaker) at (-3.5, 0.8) {150A Marine\\Breaker};
+% Power leaves bottom edge of Positive Busbar, jumps over Neg busbar
+\draw[heavyposline, jump] (-5.6, 3.4) |- (breaker.west);
+
+% Fuse Box (Center)
+\node[component] (fusebox) at (1.5, 0.8) {6-Way Fuse Box\\(20A per circuit)};
+\draw[heavyposline] (breaker.east) -- (fusebox.west); 
+
+% ─── Motors & External Routing (Shifted up to reduce arrow length) ───
+\foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
+    \node[smallnode] (m\i) at (\x, -4.0) {Motor \i\\+ 1000$\mu$F};
 }
-% Main return line flows UP from the drop line to the busbar
-\draw[heavynegline, preaction={draw, white, line width=4pt}] (neg_drop) -- (bus_blk.south);
+
+% Positive Fan-Out to Motors (Red)
+\draw[heavyposline] (fusebox.south) -- (1.5, -1.0) -- (-5.2, -1.0); % Sweeps left
+\draw[heavyposline] (1.5, -1.0) -- (4.8, -1.0); % Sweeps right
+\foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
+    % Jumps over the horizontal black return trunk below it
+    \draw[posline, jump] ([xshift=-0.2cm]\x, -1.0) -- ([xshift=-0.2cm]m\i.north);
+}
+
+% Negative Gather from Motors (Black)
+\foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
+    \draw[negline] ([xshift=0.2cm]m\i.north) -- ([xshift=0.2cm]\x, -2.0);
+}
+% Main Negative Trunk: Gathers cleanly at Y=-2.0, goes up the LEFT side to avoid crossing
+\draw[heavynegline] (5.2, -2.0) -- (-6.1, -2.0) -- (-6.1, 2.5) -- (-5.8, 2.5);
 
 \end{tikzpicture}
-\caption{Detailed electrical routing for a true battery-less system utilizing four parallel power supplies with active current sharing.}
+\caption{System-level electrical routing schematic. The architecture illustrates the parallel 48V DC power generation, centralized busbar distribution, and hierarchical circuit protection for the 6-axis actuator network.}
+%The layout explicitly places the bulk capacitors before the main circuit protection, maintaining safety, while properly decoupling the motors at the endpoints. All lines use explicit corridors to prevent ambiguity.}
 \end{figure}
 
 \begin{table}[H]
 \centering
 \caption{System Bill of Materials (BoM)}
 \renewcommand{\arraystretch}{1.3}
-\small % Reduces font size slightly to ensure it fits within page margins
+\small 
 \begin{tabular}{p{3.5cm} p{4cm} c r r p{3.5cm}}
 \hline
 \textbf{Component Name} & \textbf{Purpose / Arrangement} & \textbf{Qty} & \textbf{Unit Price} & \textbf{Total Price} & \textbf{Engineering Notes} \\
 \hline
-BOSYTRO 48V 25A 1200W Power Supply & AC to DC power supply placed outside the enclosure. & 4 & \$64.59 & \$258.36 & Four units provide ~4800W. Split across two AC circuits. \\
+BOSYTRO 48V 25A 1200W Power Supply & AC to DC power supply placed outside the enclosure. & 4 & \$64.59 & \$258.36 & Four units provide ~4800W. \textbf{Must be on a dedicated 60A 110V circuit}. \\
 \hline
-600A Heavy Duty Bus Bar (Red) & Positive distribution manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Accepts the main positive line from the breaker. \\
+Dedicated 60A AC Double-Pole Breaker & Main AC facility protection. & 1 & \$25.00 & \$25.00 & Feeds the 4 PSUs. Requires minimum 6 AWG copper wiring. \\
 \hline
-600A Heavy Duty Bus Bar (Black) & Negative return manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Returns all negative motor lines back to the PSU. \\
+600A Heavy Duty Bus Bar (Red) & Positive distribution manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Accepts the equal-length positive lines from the PSUs. \\
 \hline
-12''x12''x6'' ABS Plastic Junction Box & Main IP65 protective enclosure for distribution hardware. & 1 & \$45.99 & \$45.99 & Houses busbars, capacitors, and the fuse box. \\
+600A Heavy Duty Bus Bar (Black) & Negative return manifold placed inside the enclosure. & 1 & \$64.99 & \$64.99 & Returns all negative motor lines directly to the PSUs. \\
 \hline
-Chatovalo 6 Circuit Fuse Box & Branch circuit protection placed inside the enclosure. & 1 & \$22.99 & \$22.99 & Splits the main positive busbar into 6 protected motor lines. \\
+12''x12''x6'' ABS Plastic Junction Box & Main IP65 protective enclosure for distribution hardware. & 1 & \$45.99 & \$45.99 & Houses busbars, bulk capacitors, main breaker, and fuse box. \\
 \hline
-RED WOLF 150A Marine Circuit Breaker & Main system kill-switch placed outside the enclosure. & 1 & \$19.99 & \$19.99 & \textit{Caution:} May experience nuisance tripping under heavy 6-axis acceleration. \\
+Chatovalo 6 Circuit Fuse Box & Branch circuit protection placed inside the enclosure. & 1 & \$22.99 & \$22.99 & Splits the main positive output into 6 protected motor lines. \\
 \hline
-uxcell 4700$\mu$F 63V Electrolytic Capacitors & Voltage smoothing (Parallel) placed inside the enclosure. & 1 & \$13.79 & \$13.79 & Soldered across Red/Black busbars to absorb voltage spikes. \\
+RED WOLF 150A Marine Circuit Breaker & Main DC system kill-switch placed inside the enclosure. & 1 & \$19.99 & \$19.99 & Positioned \textbf{after} the bulk capacitors to protect the fuse box. \\
+\hline
+4700$\mu$F 63V Electrolytic Capacitors & Bulk voltage smoothing placed inside the enclosure. & 12 & \$3.50 & \$42.00 & Wired in parallel on the busbar \textbf{before} the 150A breaker. \\
+\hline
+1000$\mu$F 100V Low-ESR Capacitors & Local motor decoupling. & 6 & \$2.00 & \$12.00 & Placed directly at each motor or at the fuse box output terminals. \\
 \hline
 MyActuator RMD-X8-120 Motors & Robotic joint actuators. & 6 & \textit{Provided} & \textit{Provided} & Daisy-chained with CAN bus for control. \\
 \hline
-\multicolumn{4}{r}{\textbf{Subtotal (Amazon Components)}} & \textbf{\$491.10} &   \\
+\multicolumn{4}{r}{\textbf{Subtotal (Amazon Components)}} & \textbf{\$556.31} &   \\
 \hline
 \end{tabular}
 \end{table}
 
-\subsection{Control System Architecture}
+\section{Control System Architecture}
 
 The physical actuation of the robotic joints is governed by a robust, real-time control architecture utilizing the Controller Area Network (CAN) communication protocol. This ensures deterministic timing and high noise immunity, which are critical in environments with high electrical interference from motor switching.
 
-\subsubsection{Hardware Interface and Topology}
+\subsection{Hardware Interface and Topology}
 Unlike the power distribution which utilizes a star topology to prevent voltage drops, the CAN data network is wired in a continuous \textbf{daisy-chain configuration}. A central controller (either an Industrial PC or a Microcontroller) interfaces with the network via a USB-to-CAN adapter or a dedicated CAN shield. 
 
+\noindent
 The communication line originates at the controller, connects to the CAN-IN port of the first motor, and routes from its CAN-OUT port to the next motor, continuing sequentially to Motor 6. To prevent signal reflection and data corruption at high baud rates, the physical ends of the transmission line (at the controller and at Motor 6) must be capped with $120~\Omega$ termination resistors.
 
 \begin{figure}[H]
@@ -371,9 +238,10 @@ The communication line originates at the controller, connects to the CAN-IN port
 \caption{CAN Bus daisy-chain communication topology featuring standard $120~\Omega$ termination resistors to ensure signal integrity.}
 \end{figure}
 
-\subsubsection{Software Protocol and Actuation}
+\subsection{Software Protocol and Actuation}
 At the software level, the controller communicates with the MyActuator drivers by transmitting standard CAN frames. Each frame consists of a specific CAN ID (targeting an individual motor axis), a Data Length Code (DLC, typically 8 bytes), and a Data Payload containing the precise hexadecimal commands for position, velocity, and current limits. 
 
+\noindent
 To achieve smooth, multi-axis coordinated movement, the software executes a real-time control loop (operating between 100Hz and 500Hz). In each cycle, the controller calculates the inverse kinematics, broadcasts the target position frames to all six axes, and receives immediate feedback frames detailing the current physical angle and electrical current draw of each motor.
 
 \end{document}
