@@ -187,11 +187,18 @@ class _QH(logging.Handler):
 class ArmVisualizer(tk.Frame):
 
     _VIEW_LABELS = [
-        "FRONT  (X – Z)",
-        "SIDE   (Y – Z)",
-        "TOP    (X – Y)",
-        "3-D  PERSPECTIVE  (drag to rotate)",
+        ("FRONT", "X – Z  plane"),
+        ("SIDE",  "Y – Z  plane"),
+        ("TOP",   "X – Y  plane"),
+        ("3-D",   "Perspective  ·  drag to rotate"),
     ]
+
+    # Base scale in pixels-per-metre for ortho views (larger = more zoomed in)
+    _BASE_SCL   = 1100.0
+    # Base scale for the 3-D perspective view
+    _BASE_SCL3D = 1050.0
+    # Zoom step factor per scroll tick
+    _ZOOM_STEP  = 1.12
 
     def __init__(self, parent, **kw):
         super().__init__(parent, bg=BG, **kw)
@@ -201,32 +208,71 @@ class ArmVisualizer(tk.Frame):
         self._anim_t0    = 0.0
         self._anim_dur   = 0.0
         self._anim_job   = None
-        self._target_xyz = None      # green crosshair in world space (metres)
+        self._target_xyz = None
         self._yaw        = 35.0
         self._pitch      = 25.0
         self._drag       = None
         self._canvases   = []
+        # Per-view zoom multipliers (index 0-3)
+        self._zoom       = [1.0, 1.0, 1.0, 1.0]
         self._build()
 
+    # ── Build grid ─────────────────────────────────────────────────────────────
     def _build(self):
         for r in range(2): self.rowconfigure(r, weight=1)
         for c in range(2): self.columnconfigure(c, weight=1)
 
-        for idx, label in enumerate(self._VIEW_LABELS):
+        for idx, (short, detail) in enumerate(self._VIEW_LABELS):
             r, c = divmod(idx, 2)
+
             outer = tk.Frame(self, bg=CARD,
                              highlightbackground=BORDER, highlightthickness=1)
             outer.grid(row=r, column=c, padx=3, pady=3, sticky="nsew")
 
-            hbar = tk.Frame(outer, bg=PANEL)
-            hbar.pack(fill="x")
-            clr = ACCENT if idx == 3 else DIM
-            tk.Label(hbar, text=label, font=(FNT, 8, "bold"),
-                     fg=clr, bg=PANEL).pack(side="left", padx=8, pady=3)
+            # ── Header bar ──
+            hbar = tk.Frame(outer, bg=PANEL, height=28)
+            hbar.pack(fill="x"); hbar.pack_propagate(False)
 
+            clr = ACCENT if idx == 3 else "#7aa8d0"
+            # View badge
+            badge = tk.Frame(hbar, bg=clr, width=4)
+            badge.pack(side="left", fill="y")
+            tk.Label(hbar, text=f"  {short}", font=(FNT, 9, "bold"),
+                     fg=clr, bg=PANEL).pack(side="left")
+            tk.Label(hbar, text=f"  {detail}", font=(FNT, 8),
+                     fg=MUTED, bg=PANEL).pack(side="left")
+
+            # Zoom controls on the right of the header
+            zf = tk.Frame(hbar, bg=PANEL)
+            zf.pack(side="right", padx=6)
+            tk.Button(zf, text="⊕", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=ACCENT, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_in(i)
+                      ).pack(side="left")
+            tk.Button(zf, text="⊖", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=DIM, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_out(i)
+                      ).pack(side="left")
+            tk.Button(zf, text="↺", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=MUTED, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_reset(i)
+                      ).pack(side="left")
+
+            # ── Canvas ──
             cv = tk.Canvas(outer, bg=CANVAS_BG, highlightthickness=0)
             cv.pack(fill="both", expand=True)
             cv.bind("<Configure>", lambda e, i=idx: self._redraw(i))
+
+            # Mouse-wheel zoom (platform-agnostic)
+            cv.bind("<MouseWheel>",
+                    lambda e, i=idx: self._on_scroll(e, i, e.delta))
+            cv.bind("<Button-4>",
+                    lambda e, i=idx: self._zoom_in(i))   # Linux scroll up
+            cv.bind("<Button-5>",
+                    lambda e, i=idx: self._zoom_out(i))  # Linux scroll down
 
             if idx == 3:
                 cv.bind("<ButtonPress-1>",  self._drag_start)
@@ -234,6 +280,24 @@ class ArmVisualizer(tk.Frame):
 
             self._canvases.append(cv)
 
+    # ── Zoom helpers ───────────────────────────────────────────────────────────
+    def _on_scroll(self, _ev, idx, delta):
+        if delta > 0: self._zoom_in(idx)
+        else:         self._zoom_out(idx)
+
+    def _zoom_in(self, idx):
+        self._zoom[idx] = min(self._zoom[idx] * self._ZOOM_STEP, 12.0)
+        self._redraw(idx)
+
+    def _zoom_out(self, idx):
+        self._zoom[idx] = max(self._zoom[idx] / self._ZOOM_STEP, 0.15)
+        self._redraw(idx)
+
+    def _zoom_reset(self, idx):
+        self._zoom[idx] = 1.0
+        self._redraw(idx)
+
+    # ── Drag (3-D view) ────────────────────────────────────────────────────────
     def _drag_start(self, ev):
         self._drag = (ev.x, ev.y, self._yaw, self._pitch)
 
@@ -299,64 +363,123 @@ class ArmVisualizer(tk.Frame):
         h = cv.winfo_height()
         if w < 20 or h < 20: return
         cv.delete("all")
-        if   idx == 0: self._draw_ortho(cv, w, h, 0, 2, "X", "Z", True)
-        elif idx == 1: self._draw_ortho(cv, w, h, 1, 2, "Y", "Z", True)
-        elif idx == 2: self._draw_ortho(cv, w, h, 0, 1, "X", "Y", False)
+        if   idx == 0: self._draw_ortho(cv, w, h, 0, 2, "X", "Z", True,  0)
+        elif idx == 1: self._draw_ortho(cv, w, h, 1, 2, "Y", "Z", True,  1)
+        elif idx == 2: self._draw_ortho(cv, w, h, 0, 1, "X", "Y", False, 2)
         else:          self._draw_3d(cv, w, h)
 
-    def _draw_ortho(self, cv, w, h, ax1, ax2, xl, yl, flip_y):
-        mg  = 32
-        scl = min(w - 2*mg, h - 2*mg) / 0.90
+    def _draw_ortho(self, cv, w, h, ax1, ax2, xl, yl, flip_y, view_idx=0):
+        mg  = 42
+        # Base scale uses class constant x per-view zoom
+        scl = self._BASE_SCL * self._zoom[view_idx]
         cx, cy = w / 2, h / 2
 
-        step = 0.10
-        n    = 5
-        for i in range(-n, n+1):
-            col = "#1e2d40" if i != 0 else "#253548"
-            cv.create_line(cx + i*step*scl, 0, cx + i*step*scl, h, fill=col)
-            cv.create_line(0, cy + i*step*scl, w, cy + i*step*scl, fill=col)
+        # ── Grid ──────────────────────────────────────────────────────────────
+        step = 0.10   # 100 mm grid spacing
+        n    = max(6, int((max(w, h) / 2) / (step * scl)) + 2)
 
-        cv.create_text(w-6, cy, text=f"+{xl}", fill=MUTED, font=(FNT, 8), anchor="e")
-        cv.create_text(cx,  6,  text=f"+{yl}", fill=MUTED, font=(FNT, 8), anchor="n")
+        for i in range(-n, n + 1):
+            is_origin = (i == 0)
+            col  = "#253548" if is_origin else "#172030"
+            lw   = 1.5       if is_origin else 1
+            dash = ()        if is_origin else (4, 6)
+            x_px = cx + i * step * scl
+            y_px = cy + i * step * scl
+            if 0 <= x_px <= w:
+                cv.create_line(x_px, 0, x_px, h, fill=col, width=lw, dash=dash)
+            if 0 <= y_px <= h:
+                cv.create_line(0, y_px, w, y_px, fill=col, width=lw, dash=dash)
 
+        # ── Axis tick labels (every 100 mm) ───────────────────────────────────
+        tick_n = max(3, int(w / (step * scl * 2)) + 1)
+        for i in range(-tick_n, tick_n + 1):
+            if i == 0: continue
+            val_mm = i * 100
+            x_px   = cx + i * step * scl
+            y_px   = cy - i * step * scl   # flipped for screen coords
+            if mg < x_px < w - mg:
+                cv.create_text(x_px, cy + 8, text=f"{val_mm:+.0f}",
+                               fill="#2e4060", font=(FNT, 6), anchor="n")
+            if mg < y_px < h - mg:
+                cv.create_text(cx + 5, y_px, text=f"{abs(val_mm):+.0f}",
+                               fill="#2e4060", font=(FNT, 6), anchor="w")
+
+        # ── Axis arrows ───────────────────────────────────────────────────────
+        ax_col_h = "#c04060" if xl == "X" else ("#40c060" if xl == "Y" else "#4080ff")
+        ax_col_v = "#c04060" if yl == "X" else ("#40c060" if yl == "Y" else "#4080ff")
+        aw = min(w - mg - 10, cx + 0.45 * scl)
+        ah = max(mg + 10,     cy - 0.45 * scl)
+        cv.create_line(cx, cy, aw, cy,  fill=ax_col_h, width=2, arrow="last")
+        cv.create_line(cx, cy, cx, ah,  fill=ax_col_v, width=2, arrow="last")
+        cv.create_text(aw + 4, cy,     text=f"+{xl}", fill=ax_col_h,
+                       font=(FNT, 9, "bold"), anchor="w")
+        cv.create_text(cx,     ah - 4, text=f"+{yl}", fill=ax_col_v,
+                       font=(FNT, 9, "bold"), anchor="s")
+
+        # ── Projection helper ─────────────────────────────────────────────────
         def proj(p):
             sx = p[ax1] * scl + cx
             sy = ((-p[ax2]) if flip_y else p[ax2]) * scl + cy
             return sx, sy
 
+        # ── Target crosshair ──────────────────────────────────────────────────
         if self._target_xyz:
             tx, ty = proj(self._target_xyz)
-            r = 8
-            cv.create_oval(tx-r, ty-r, tx+r, ty+r,
+            r = 10
+            cv.create_oval(tx - r, ty - r, tx + r, ty + r,
                            outline=GREEN, fill="", width=2, dash=(4, 3))
-            cv.create_line(tx-r-4, ty, tx+r+4, ty, fill=GREEN, width=1)
-            cv.create_line(tx, ty-r-4, tx, ty+r+4, fill=GREEN, width=1)
+            cv.create_line(tx - r - 6, ty, tx + r + 6, ty,
+                           fill=GREEN, width=1)
+            cv.create_line(tx, ty - r - 6, tx, ty + r + 6,
+                           fill=GREEN, width=1)
+            cv.create_text(tx + r + 5, ty - r - 2, text="TARGET",
+                           fill=GREEN, font=(FNT, 7, "bold"), anchor="sw")
 
+        # ── Arm links ─────────────────────────────────────────────────────────
         pts2 = [proj(p) for p in self._pts]
-        for i in range(len(pts2)-1):
+        # Shadow pass
+        for i in range(len(pts2) - 1):
+            lw = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*pts2[i], *pts2[i + 1],
+                           fill="#0d1520", width=lw + 4, capstyle="round")
+        # Color pass
+        for i in range(len(pts2) - 1):
             col = JCOLORS[min(i, 5)]
-            lw  = 5 if i == 0 else (4 if i < 4 else 3)
-            cv.create_line(*pts2[i], *pts2[i+1],
-                           fill=col, width=lw, capstyle="round")
+            lw  = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*pts2[i], *pts2[i + 1],
+                           fill=col, width=lw, capstyle="round", joinstyle="round")
 
+        # ── Joint markers ─────────────────────────────────────────────────────
         for i, (sx, sy) in enumerate(pts2):
             if i == 0:
-                s = 5
-                cv.create_rectangle(sx-s, sy-s, sx+s, sy+s,
-                                    fill=JCOLORS[0], outline=CANVAS_BG)
-            elif i == len(pts2)-1:
-                r = 8
-                cv.create_oval(sx-r, sy-r, sx+r, sy+r,
-                               fill=JCOLORS[5], outline=CANVAS_BG, width=2)
+                s = 7
+                cv.create_rectangle(sx - s, sy - s, sx + s, sy + s,
+                                    fill=JCOLORS[0], outline="#ffffff", width=1)
+                cv.create_text(sx, sy - s - 5, text="BASE",
+                               fill=JCOLORS[0], font=(FNT, 6, "bold"), anchor="s")
+            elif i == len(pts2) - 1:
+                r = 9
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[5], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 5, text="TIP",
+                               fill=JCOLORS[5], font=(FNT, 7, "bold"), anchor="s")
             else:
-                r = 4
-                cv.create_oval(sx-r, sy-r, sx+r, sy+r,
-                               fill=JCOLORS[i], outline=CANVAS_BG)
+                r = 5
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[i], outline="#ffffff", width=1)
+                cv.create_text(sx + r + 4, sy, text=f"J{i+1}",
+                               fill=JCOLORS[i], font=(FNT, 7), anchor="w")
 
+        # ── HUD ───────────────────────────────────────────────────────────────
         tip = self._pts[-1]
-        cv.create_text(6, h-6,
-                       text=f"X:{tip[0]*1000:+.0f}  Y:{tip[1]*1000:+.0f}  Z:{tip[2]*1000:+.0f} mm",
-                       fill=DIM, font=(FNT, 7), anchor="sw")
+        hud = (f"TIP  X:{tip[0]*1000:+.1f}  "
+               f"Y:{tip[1]*1000:+.1f}  "
+               f"Z:{tip[2]*1000:+.1f} mm")
+        cv.create_text(8, h - 8, text=hud,
+                       fill="#4a6080", font=(FNT, 8), anchor="sw")
+        cv.create_text(w - 8, h - 8,
+                       text=f"zoom {self._zoom[view_idx]:.2f}x",
+                       fill="#2e4060", font=(FNT, 7), anchor="se")
 
     def _proj3d(self, x, y, z, scl, cx, cy):
         yaw   = math.radians(self._yaw)
@@ -370,65 +493,88 @@ class ArmVisualizer(tk.Frame):
 
     def _draw_3d(self, cv, w, h):
         mg  = 36
-        scl = min(w-2*mg, h-2*mg) / 0.55
-        cx, cy = w*0.5, h*0.52
+        scl = self._BASE_SCL3D * self._zoom[3]
+        cx, cy = w * 0.5, h * 0.52
 
-        step, n = 0.10, 4
-        for i in range(-n, n+1):
-            x0, y0 = self._proj3d(-n*step, i*step, 0, scl, cx, cy)
-            x1, y1 = self._proj3d( n*step, i*step, 0, scl, cx, cy)
-            cv.create_line(x0, y0, x1, y1, fill=BORDER)
-            x0, y0 = self._proj3d(i*step, -n*step, 0, scl, cx, cy)
-            x1, y1 = self._proj3d(i*step,  n*step, 0, scl, cx, cy)
-            cv.create_line(x0, y0, x1, y1, fill=BORDER)
+        # ── Floor grid ────────────────────────────────────────────────────────
+        step, n = 0.10, 5
+        for i in range(-n, n + 1):
+            is_orig = (i == 0)
+            gcol = "#253548" if is_orig else BORDER
+            glw  = 1.5       if is_orig else 1
+            x0, y0 = self._proj3d(-n * step, i * step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d( n * step, i * step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=gcol, width=glw)
+            x0, y0 = self._proj3d(i * step, -n * step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d(i * step,  n * step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=gcol, width=glw)
 
-        for v, lbl, col in [((0.3,0,0),"X","#c04040"),
-                             ((0,0.3,0),"Y","#40c040"),
-                             ((0,0,0.3),"Z","#4040ff")]:
-            ox, oy = self._proj3d(0,0,0, scl, cx, cy)
-            ax, ay = self._proj3d(*v,    scl, cx, cy)
-            cv.create_line(ox,oy,ax,ay, fill=col, width=2, arrow="last")
-            cv.create_text(ax+4, ay, text=lbl, fill=col, font=(FNT,8,"bold"))
+        # ── World-frame axes ──────────────────────────────────────────────────
+        axis_len = 0.35
+        for (vx, vy, vz), lbl, col in [
+                ((axis_len, 0, 0), "X", "#e05050"),
+                ((0, axis_len, 0), "Y", "#50c050"),
+                ((0, 0, axis_len), "Z", "#5090ff")]:
+            ox, oy = self._proj3d(0, 0, 0, scl, cx, cy)
+            ax, ay = self._proj3d(vx, vy, vz, scl, cx, cy)
+            cv.create_line(ox, oy, ax, ay, fill=col, width=2, arrow="last")
+            cv.create_text(ax + 6, ay, text=lbl, fill=col,
+                           font=(FNT, 9, "bold"))
 
+        # ── Target ────────────────────────────────────────────────────────────
         if self._target_xyz:
             tx, ty = self._proj3d(*self._target_xyz, scl, cx, cy)
-            r = 10
-            cv.create_oval(tx-r, ty-r, tx+r, ty+r,
-                           outline=GREEN, fill="", width=2, dash=(4,2))
-            cv.create_text(tx+r+4, ty, text="TARGET",
-                           fill=GREEN, font=(FNT,7), anchor="w")
+            r = 11
+            cv.create_oval(tx - r, ty - r, tx + r, ty + r,
+                           outline=GREEN, fill="", width=2, dash=(4, 2))
+            cv.create_line(tx - r, ty, tx + r, ty, fill=GREEN, width=1)
+            cv.create_line(tx, ty - r, tx, ty + r, fill=GREEN, width=1)
+            cv.create_text(tx + r + 5, ty, text="TARGET",
+                           fill=GREEN, font=(FNT, 7, "bold"), anchor="w")
 
-        proj = [self._proj3d(p[0],p[1],p[2], scl, cx, cy) for p in self._pts]
-        for i in range(len(proj)-1):
-            col = JCOLORS[min(i,5)]
-            lw  = 5 if i==0 else (4 if i<4 else 3)
-            cv.create_line(*proj[i], *proj[i+1],
-                           fill=col,      width=lw,   capstyle="round")
+        # ── Arm links — shadow then color ─────────────────────────────────────
+        prj = [self._proj3d(p[0], p[1], p[2], scl, cx, cy) for p in self._pts]
+        for i in range(len(prj) - 1):
+            lw = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*prj[i], *prj[i + 1],
+                           fill="#0a1520", width=lw + 4, capstyle="round")
+        for i in range(len(prj) - 1):
+            col = JCOLORS[min(i, 5)]
+            lw  = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*prj[i], *prj[i + 1],
+                           fill=col, width=lw, capstyle="round")
 
-        for i, (sx, sy) in enumerate(proj):
+        # ── Joint markers ─────────────────────────────────────────────────────
+        for i, (sx, sy) in enumerate(prj):
             if i == 0:
-                r = 7
-                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
-                               fill=JCOLORS[0], outline=CANVAS_BG, width=2)
-            elif i == len(proj)-1:
-                r = 9
-                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
-                               fill=JCOLORS[5], outline=CANVAS_BG, width=2)
-                cv.create_text(sx, sy-r-5, text="TIP",
-                               fill=JCOLORS[5], font=(FNT,7,"bold"))
+                r = 8
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[0], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 6, text="BASE",
+                               fill=JCOLORS[0], font=(FNT, 7, "bold"), anchor="s")
+            elif i == len(prj) - 1:
+                r = 10
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[5], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 6, text="TIP",
+                               fill=JCOLORS[5], font=(FNT, 7, "bold"), anchor="s")
             else:
-                r = 5
-                cv.create_oval(sx-r,sy-r,sx+r,sy+r,
-                               fill=JCOLORS[i], outline=CANVAS_BG)
-                cv.create_text(sx+r+3, sy, text=f"M{i+1}",
-                               fill=JCOLORS[i], font=(FNT,7))
+                r = 6
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[i], outline="#ffffff", width=1)
+                cv.create_text(sx + r + 4, sy, text=_JNAMES[i],
+                               fill=JCOLORS[i], font=(FNT, 7), anchor="w")
 
+        # ── HUD ───────────────────────────────────────────────────────────────
         tip = self._pts[-1]
-        cv.create_text(6, h-6,
-                       text=f"TIP  X:{tip[0]*1000:+.0f}  Y:{tip[1]*1000:+.0f}  Z:{tip[2]*1000:+.0f} mm",
-                       fill=DIM, font=(FNT, 7), anchor="sw")
-        cv.create_text(w-6, 6,
-                       text=f"yaw {self._yaw:.0f}°  pitch {self._pitch:.0f}°",
+        cv.create_text(8, h - 8,
+                       text=(f"TIP  X:{tip[0]*1000:+.1f}  "
+                             f"Y:{tip[1]*1000:+.1f}  "
+                             f"Z:{tip[2]*1000:+.1f} mm"),
+                       fill="#4a6080", font=(FNT, 8), anchor="sw")
+        cv.create_text(w - 8, 8,
+                       text=f"yaw {self._yaw:.0f}  pitch {self._pitch:.0f}  "
+                            f"zoom {self._zoom[3]:.2f}x",
                        fill=MUTED, font=(FNT, 7), anchor="ne")
 
 
@@ -496,9 +642,9 @@ class IKTable(tk.Frame):
 class CartesianGUI(tk.Tk):
     def __init__(self, simulated=True, port="COM3", bustype="slcan"):
         super().__init__()
-        self.title("6-Axis Robot  ·  Cartesian Input + Arm Visualizer")
+        self.title("⬡  6-Axis Industrial Robot  ·  Cartesian Control + Live Arm Visualizer")
         self.configure(bg=BG)
-        self.minsize(1300, 880)
+        self.minsize(1400, 920)
 
         self._sim       = simulated
         self._port      = port
@@ -521,7 +667,10 @@ class CartesianGUI(tk.Tk):
         self._build()
         self._poll_log()
         self.protocol("WM_DELETE_WINDOW", self._close)
-        self.after(200, lambda: self._viz.set_angles([0.0]*6))
+        # Realistic default pose: arm reaching forward at elbow-up configuration
+        _default_angles = [0.0, 45.0, 80.0, -35.0, 0.0, 0.0]
+        self._cur_ang = list(_default_angles)
+        self.after(200, lambda: self._viz.set_angles(_default_angles, duration=0.0))
 
         if simulated:
             self.after(400, self._connect)
@@ -685,9 +834,14 @@ class CartesianGUI(tk.Tk):
         self._bcsv_run.pack(side="left", padx=2)
 
     def _build_viz_panel(self, parent):
-        tk.Label(parent, text="ARM VISUALIZATION  —  live kinematic display",
-                 font=(FNT,9,"bold"), fg=DIM, bg=BG
-                 ).pack(anchor="w", pady=(0,4))
+        hdr = tk.Frame(parent, bg=BG); hdr.pack(fill="x", pady=(0, 4))
+        tk.Label(hdr, text="ARM VISUALIZATION  —  live kinematic display",
+                 font=(FNT, 9, "bold"), fg=DIM, bg=BG
+                 ).pack(side="left")
+        tk.Label(hdr,
+                 text="scroll-wheel or ⊕/⊖ to zoom  ·  drag 3-D to rotate",
+                 font=(FNT, 8), fg=MUTED, bg=BG
+                 ).pack(side="right")
 
         leg = tk.Frame(parent, bg=PANEL); leg.pack(fill="x", pady=(0,5))
         for i, nm in enumerate(_JNAMES):
@@ -841,12 +995,13 @@ class CartesianGUI(tk.Tk):
 
     def _home(self):
         self._xv.set("300"); self._yv.set("0"); self._zv.set("300")
-        self._ik_ang  = [0.0]*6
-        self._cur_ang = [0.0]*6
-        self._viz.set_angles([0.0]*6, duration=1.5)
+        _home_ang = [0.0, 45.0, 80.0, -35.0, 0.0, 0.0]
+        self._ik_ang  = list(_home_ang)
+        self._cur_ang = list(_home_ang)
+        self._viz.set_angles(_home_ang, duration=1.5)
         self._viz.clear_target()
-        self._tbl.set_current([0.0]*6)
-        for i in range(6): self._tbl.update_row(i,0,0,0)
+        self._tbl.set_current(_home_ang)
+        for i in range(6): self._tbl.update_row(i, _home_ang[i], _home_ang[i], 0)
         robot = self.robot
         if robot:
             threading.Thread(target=robot.go_home,
