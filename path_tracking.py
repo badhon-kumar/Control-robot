@@ -783,6 +783,23 @@ class PathPlannerPanel(tk.Frame):
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
 
+        def _on_scroll(e):
+            try:
+                w = self.winfo_containing(e.x_root, e.y_root)
+                # Scroll only if the mouse is hovering over this panel (`self`)
+                if w and str(w).startswith(str(self)):
+                    delta = getattr(e, 'delta', 0)
+                    if delta == 0:
+                        delta = 120 if getattr(e, 'num', 0) == 4 else -120
+                    if delta != 0:
+                        canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+            except Exception:
+                pass
+
+        self.bind_all("<MouseWheel>", _on_scroll, add="+")
+        self.bind_all("<Button-4>", _on_scroll, add="+")
+        self.bind_all("<Button-5>", _on_scroll, add="+")
+
         # Path type
         sec = self._sec(inner, "PATH TYPE", ACCENT)
         for pt in self.PATH_TYPES:

@@ -1,0 +1,1904 @@
+"""
+cartesian_gui.py  ·  v4  —  Complete Industrial Robot Control GUI
+==================================================================
+TWO control modes, switchable with a single click:
+
+  ① CARTESIAN IK   Enter X/Y/Z target → IK solves joint angles →
+                   arm animates to new pose across 4 live views.
+
+  ② JOINT JOG      Control each of the 6 motors INDEPENDENTLY:
+                   • Continuous jog buttons  (+/−)  held for sustained motion
+                   • Step jog  — nudge by a configurable increment (1° … 90°)
+                   • Direct angle entry per motor with instant SEND
+                   • Per-motor speed slider  (1 … max °/s)
+                   • Live position / velocity / current readout per motor
+                   • LOCK toggle to freeze individual joints during jogging
+                   • Cartesian jog (nudge tool-tip by ΔX/ΔY/ΔZ via mini-IK)
+                   • ZERO ALL / HOME ALL / STOP ALL global controls
+                   • Record pose → auto-append to CSV sequence
+
+Both modes share:
+  • The 4-view arm visualizer (Front, Side, Top, 3-D with drag-to-rotate)
+  • Per-view zoom (⊕/⊖ buttons + mouse-wheel)
+  • IK solution table
+  • CSV sequence runner (automatic mode)
+  • System log
+
+Run:
+    python cartesian_gui.py              ← simulation / visual-only
+    python cartesian_gui.py --real --port COM3
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+import time
+import math
+import argparse
+import queue
+import logging
+import numpy as np
+from typing import Optional
+
+# ── Optional real-hardware imports ────────────────────────────────────────────
+try:
+    from can_interface import CANBus
+    from robot_controller import RobotController, DEFAULT_JOINT_CONFIG
+    HAS_ROBOT = True
+except ImportError:
+    HAS_ROBOT = False
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STANDALONE KINEMATICS (PURE RADIAN + MULTI-SEED)
+# ══════════════════════════════════════════════════════════════════════════════
+# The columns are: [theta_offset, d (Z-offset), a (X-length), alpha (twist)]
+_DH_PARAMS = [
+    [  0.0,        0.100,  0.0,    math.pi/2  ],  # Joint 1 — Base
+    [ -math.pi/2,  0.0,    0.060,  0.0        ],  # Joint 2 — Shoulder
+    [  0.0,        0.0,    0.100,  0.0        ],  # Joint 3 — Elbow
+    [  0.0,        0.100,  0.0,    math.pi/2  ],  # Joint 4 — Wrist1
+    [  0.0,        0.100,  0.0,   -math.pi/2  ],  # Joint 5 — Wrist2
+    [  0.0,        0.100,  0.0,    0.0        ],  # Joint 6 — Tool
+]
+
+_JOINT_LIMITS_DEG = [
+    (-180.0,  180.0),
+    ( -90.0,   90.0),
+    (-120.0,  120.0),
+    (-180.0,  180.0),
+    ( -90.0,   90.0),
+    (-360.0,  360.0),
+]
+
+_SPEED_LIMITS = [120.0, 90.0, 90.0, 180.0, 180.0, 200.0]
+_JNAMES       = ["Base", "Shoulder", "Elbow", "Wrist1", "Wrist2", "Tool"]
+
+
+def _dh(theta, d, a, alpha):
+    ct, st = math.cos(theta), math.sin(theta)
+    ca, sa = math.cos(alpha), math.sin(alpha)
+    return np.array([
+        [ct,  -st*ca,  st*sa,  a*ct],
+        [st,   ct*ca, -ct*sa,  a*st],
+        [0.0,  sa,     ca,     d   ],
+        [0.0,  0.0,    0.0,    1.0 ],
+    ])
+
+def _fk_rad(angles_rad):
+    """FK operating entirely in radians. Returns (tip_xyz_m, joint_pts_list)."""
+    T   = np.eye(4)
+    pts = [[0.0, 0.0, 0.0]]
+    for i, (th_off, d, a, alpha) in enumerate(_DH_PARAMS):
+        T = T @ _dh(angles_rad[i] + th_off, d, a, alpha)
+        pts.append([T[0,3], T[1,3], T[2,3]])
+    return T[:3, 3].copy(), pts
+
+def _fk(angles_deg):
+    """Forward kinematics from degrees. Returns (tip_xyz_m, joint_pts_list)."""
+    return _fk_rad(np.deg2rad(angles_deg))
+
+def _jacobian_rad(angles_rad, eps=1e-4):
+    """3×6 position Jacobian, angles in radians, result in m/rad."""
+    base = _fk_rad(angles_rad)[0]
+    J = np.zeros((3, 6))
+    for i in range(6):
+        p = np.array(angles_rad, dtype=float)
+        p[i] += eps
+        J[:, i] = (_fk_rad(p)[0] - base) / eps
+    return J
+
+def _ik(target_m, start_deg=None, max_iter=300, tol=5e-4):
+    """
+    Damped least-squares IK with multi-seed restart.
+    Works entirely in radians to avoid unit-mixing bugs.
+    Returns (angles_deg, error_m, success).
+    """
+    tgt = np.array(target_m, dtype=float)
+    lim_rad = [(math.radians(lo), math.radians(hi)) for lo, hi in _JOINT_LIMITS_DEG]
+
+    # Geometry hint: rotate base to face the target horizontally
+    x, y, _ = tgt
+    base_yaw = math.degrees(math.atan2(y, x)) if (abs(x) > 0.01 or abs(y) > 0.01) else 0.0
+
+    # Rich seed set — varying shoulder, elbow, and wrist-pitch.
+    seeds_deg = []
+    if start_deg is not None:
+        seeds_deg.append(list(start_deg))
+    for j2 in [60, 45, 75, 30, 80]:
+        for j3 in [80, 60, 100, 40, 110]:
+            for j4 in [0, 45, -45, 90, -90, 135, -135]:
+                seeds_deg.append([base_yaw, j2, j3, j4, 0.0, 0.0])
+    
+    # Negative-elbow configs (arm bent the other way)
+    for j2 in [-45, -60, -30]:
+        for j3 in [-80, -60, -100]:
+            for j4 in [0, 90, -90]:
+                seeds_deg.append([base_yaw, j2, j3, j4, 0.0, 0.0])
+
+    best_angles_deg = np.zeros(6)
+    best_err = 1e9
+    lam = 0.05
+
+    for sd in seeds_deg:
+        a = np.deg2rad(np.array(sd, dtype=float))
+        for _ in range(max_iter):
+            pos, _ = _fk_rad(a)
+            err    = tgt - pos
+            n      = float(np.linalg.norm(err))
+            if n < tol:
+                return np.degrees(a), n, True
+            J   = _jacobian_rad(a)
+            JJt = J @ J.T
+            dq  = J.T @ np.linalg.solve(JJt + lam**2 * np.eye(3), err)
+            a   = a + dq * 0.5
+            for i in range(6):
+                lo, hi = lim_rad[i]
+                a[i] = max(lo, min(hi, a[i]))
+        
+        pos, _ = _fk_rad(a)
+        e = float(np.linalg.norm(tgt - pos))
+        if e < best_err:
+            best_err = e
+            best_angles_deg = np.degrees(a).copy()
+
+    return best_angles_deg, best_err, best_err < 0.003
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# THEME
+# ══════════════════════════════════════════════════════════════════════════════
+BG        = "#0a0e14"
+PANEL     = "#111720"
+CARD      = "#161d27"
+INPUT     = "#1c2535"
+BORDER    = "#243044"
+ACCENT    = "#00e5c0"
+BLUE      = "#3d9df5"
+RED       = "#f54d4d"
+YELLOW    = "#f5c542"
+GREEN     = "#40c057"
+ORANGE    = "#f07830"
+MUTED     = "#5a6a80"
+TEXT      = "#d8e4f0"
+DIM       = "#8898aa"
+CANVAS_BG = "#070c12"
+FNT       = "Courier New"
+JCOLORS   = ["#00e5c0","#3d9df5","#f5c542","#f07830","#c084fc","#74d97a"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGGING
+# ══════════════════════════════════════════════════════════════════════════════
+_lq: queue.Queue = queue.Queue()
+
+class _QH(logging.Handler):
+    def emit(self, r): _lq.put(self.format(r))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3-D ARM VISUALIZER
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ArmVisualizer(tk.Frame):
+
+    _VIEW_LABELS = [
+        ("FRONT", "X – Z  plane"),
+        ("SIDE",  "Y – Z  plane"),
+        ("TOP",   "X – Y  plane"),
+        ("3-D",   "Perspective  ·  drag to rotate"),
+    ]
+
+    # Base scale in pixels-per-metre for ortho views (larger = more zoomed in)
+    _BASE_SCL   = 1100.0
+    # Base scale for the 3-D perspective view
+    _BASE_SCL3D = 1050.0
+    # Zoom step factor per scroll tick
+    _ZOOM_STEP  = 1.12
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=BG, **kw)
+        self._pts        = [[0.0, 0.0, 0.0]] * 7
+        self._anim_from  = None
+        self._anim_to    = None
+        self._anim_t0    = 0.0
+        self._anim_dur   = 0.0
+        self._anim_job   = None
+        self._target_xyz = None
+        self._yaw        = 35.0
+        self._pitch      = 25.0
+        self._drag       = None
+        self._canvases   = []
+        # Per-view zoom multipliers (index 0-3)
+        self._zoom       = [1.0, 1.0, 1.0, 1.0]
+        self._build()
+
+    # ── Build grid ─────────────────────────────────────────────────────────────
+    def _build(self):
+        for r in range(2): self.rowconfigure(r, weight=1)
+        for c in range(2): self.columnconfigure(c, weight=1)
+
+        for idx, (short, detail) in enumerate(self._VIEW_LABELS):
+            r, c = divmod(idx, 2)
+
+            outer = tk.Frame(self, bg=CARD,
+                             highlightbackground=BORDER, highlightthickness=1)
+            outer.grid(row=r, column=c, padx=3, pady=3, sticky="nsew")
+
+            # ── Header bar ──
+            hbar = tk.Frame(outer, bg=PANEL, height=28)
+            hbar.pack(fill="x"); hbar.pack_propagate(False)
+
+            clr = ACCENT if idx == 3 else "#7aa8d0"
+            # View badge
+            badge = tk.Frame(hbar, bg=clr, width=4)
+            badge.pack(side="left", fill="y")
+            tk.Label(hbar, text=f"  {short}", font=(FNT, 9, "bold"),
+                     fg=clr, bg=PANEL).pack(side="left")
+            tk.Label(hbar, text=f"  {detail}", font=(FNT, 8),
+                     fg=MUTED, bg=PANEL).pack(side="left")
+
+            # Zoom controls on the right of the header
+            zf = tk.Frame(hbar, bg=PANEL)
+            zf.pack(side="right", padx=6)
+            tk.Button(zf, text="⊕", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=ACCENT, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_in(i)
+                      ).pack(side="left")
+            tk.Button(zf, text="⊖", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=DIM, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_out(i)
+                      ).pack(side="left")
+            tk.Button(zf, text="↺", font=(FNT, 8, "bold"),
+                      bg=PANEL, fg=MUTED, relief="flat", cursor="hand2",
+                      padx=4, pady=0,
+                      command=lambda i=idx: self._zoom_reset(i)
+                      ).pack(side="left")
+
+            # ── Canvas ──
+            cv = tk.Canvas(outer, bg=CANVAS_BG, highlightthickness=0)
+            cv.pack(fill="both", expand=True)
+            cv.bind("<Configure>", lambda e, i=idx: self._redraw(i))
+
+            # Mouse-wheel zoom (platform-agnostic)
+            cv.bind("<MouseWheel>",
+                    lambda e, i=idx: self._on_scroll(e, i, e.delta))
+            cv.bind("<Button-4>",
+                    lambda e, i=idx: self._zoom_in(i))   # Linux scroll up
+            cv.bind("<Button-5>",
+                    lambda e, i=idx: self._zoom_out(i))  # Linux scroll down
+
+            if idx == 3:
+                cv.bind("<ButtonPress-1>",  self._drag_start)
+                cv.bind("<B1-Motion>",       self._drag_move)
+
+            self._canvases.append(cv)
+
+    # ── Zoom helpers ───────────────────────────────────────────────────────────
+    def _on_scroll(self, _ev, idx, delta):
+        if delta > 0: self._zoom_in(idx)
+        else:         self._zoom_out(idx)
+
+    def _zoom_in(self, idx):
+        self._zoom[idx] = min(self._zoom[idx] * self._ZOOM_STEP, 12.0)
+        self._redraw(idx)
+
+    def _zoom_out(self, idx):
+        self._zoom[idx] = max(self._zoom[idx] / self._ZOOM_STEP, 0.15)
+        self._redraw(idx)
+
+    def _zoom_reset(self, idx):
+        self._zoom[idx] = 1.0
+        self._redraw(idx)
+
+    # ── Drag (3-D view) ────────────────────────────────────────────────────────
+    def _drag_start(self, ev):
+        self._drag = (ev.x, ev.y, self._yaw, self._pitch)
+
+    def _drag_move(self, ev):
+        if not self._drag: return
+        x0, y0, yaw0, pit0 = self._drag
+        self._yaw   = yaw0   + (ev.x - x0) * 0.45
+        self._pitch = max(-89.0, min(89.0, pit0 - (ev.y - y0) * 0.45))
+        self._redraw(3)
+
+    def set_angles(self, angles_deg, duration=0.0, target_xyz=None):
+        _, new_pts = _fk(angles_deg)
+        if target_xyz is not None:
+            self._target_xyz = list(target_xyz)
+        if duration <= 0:
+            self._pts = new_pts
+            self._cancel_anim()
+            self._redraw_all()
+            return
+        self._cancel_anim()
+        self._anim_from = [list(p) for p in self._pts]
+        self._anim_to   = new_pts
+        self._anim_t0   = time.time()
+        self._anim_dur  = duration
+        self._tick_anim()
+
+    def set_target(self, xyz_m):
+        self._target_xyz = list(xyz_m) if xyz_m else None
+        self._redraw_all()
+
+    def clear_target(self):
+        self._target_xyz = None
+        self._redraw_all()
+
+    def _cancel_anim(self):
+        if self._anim_job:
+            self.after_cancel(self._anim_job)
+            self._anim_job = None
+
+    def _tick_anim(self):
+        elapsed = time.time() - self._anim_t0
+        t = min(elapsed / self._anim_dur, 1.0)
+        t = t * t * (3 - 2 * t)            # smooth step
+        self._pts = [
+            [self._anim_from[i][j] +
+             (self._anim_to[i][j] - self._anim_from[i][j]) * t
+             for j in range(3)]
+            for i in range(len(self._anim_from))
+        ]
+        self._redraw_all()
+        if t < 1.0:
+            self._anim_job = self.after(16, self._tick_anim)
+        else:
+            self._pts = self._anim_to
+            self._anim_job = None
+
+    def _redraw_all(self):
+        for i in range(4): self._redraw(i)
+
+    def _redraw(self, idx):
+        cv = self._canvases[idx]
+        w = cv.winfo_width()
+        h = cv.winfo_height()
+        if w < 20 or h < 20: return
+        cv.delete("all")
+        if   idx == 0: self._draw_ortho(cv, w, h, 0, 2, "X", "Z", True,  0)
+        elif idx == 1: self._draw_ortho(cv, w, h, 1, 2, "Y", "Z", True,  1)
+        elif idx == 2: self._draw_ortho(cv, w, h, 0, 1, "X", "Y", False, 2)
+        else:          self._draw_3d(cv, w, h)
+
+    def _draw_ortho(self, cv, w, h, ax1, ax2, xl, yl, flip_y, view_idx=0):
+        mg  = 42
+        # Base scale uses class constant x per-view zoom
+        scl = self._BASE_SCL * self._zoom[view_idx]
+        cx, cy = w / 2, h / 2
+
+        # ── Grid ──────────────────────────────────────────────────────────────
+        step = 0.10   # 100 mm grid spacing
+        n    = max(6, int((max(w, h) / 2) / (step * scl)) + 2)
+
+        for i in range(-n, n + 1):
+            is_origin = (i == 0)
+            col  = "#253548" if is_origin else "#172030"
+            lw   = 1.5       if is_origin else 1
+            dash = ()        if is_origin else (4, 6)
+            x_px = cx + i * step * scl
+            y_px = cy + i * step * scl
+            if 0 <= x_px <= w:
+                cv.create_line(x_px, 0, x_px, h, fill=col, width=lw, dash=dash)
+            if 0 <= y_px <= h:
+                cv.create_line(0, y_px, w, y_px, fill=col, width=lw, dash=dash)
+
+        # ── Axis tick labels (every 100 mm) ───────────────────────────────────
+        tick_n = max(3, int(w / (step * scl * 2)) + 1)
+        for i in range(-tick_n, tick_n + 1):
+            if i == 0: continue
+            val_mm = i * 100
+            x_px   = cx + i * step * scl
+            y_px   = cy - i * step * scl   # flipped for screen coords
+            if mg < x_px < w - mg:
+                cv.create_text(x_px, cy + 8, text=f"{val_mm:+.0f}",
+                               fill="#2e4060", font=(FNT, 6), anchor="n")
+            if mg < y_px < h - mg:
+                cv.create_text(cx + 5, y_px, text=f"{abs(val_mm):+.0f}",
+                               fill="#2e4060", font=(FNT, 6), anchor="w")
+
+        # ── Axis arrows ───────────────────────────────────────────────────────
+        ax_col_h = "#c04060" if xl == "X" else ("#40c060" if xl == "Y" else "#4080ff")
+        ax_col_v = "#c04060" if yl == "X" else ("#40c060" if yl == "Y" else "#4080ff")
+        aw = min(w - mg - 10, cx + 0.45 * scl)
+        ah = max(mg + 10,     cy - 0.45 * scl)
+        cv.create_line(cx, cy, aw, cy,  fill=ax_col_h, width=2, arrow="last")
+        cv.create_line(cx, cy, cx, ah,  fill=ax_col_v, width=2, arrow="last")
+        cv.create_text(aw + 4, cy,     text=f"+{xl}", fill=ax_col_h,
+                       font=(FNT, 9, "bold"), anchor="w")
+        cv.create_text(cx,     ah - 4, text=f"+{yl}", fill=ax_col_v,
+                       font=(FNT, 9, "bold"), anchor="s")
+
+        # ── Projection helper ─────────────────────────────────────────────────
+        def proj(p):
+            sx = p[ax1] * scl + cx
+            sy = ((-p[ax2]) if flip_y else p[ax2]) * scl + cy
+            return sx, sy
+
+        # ── Target crosshair ──────────────────────────────────────────────────
+        if self._target_xyz:
+            tx, ty = proj(self._target_xyz)
+            r = 10
+            cv.create_oval(tx - r, ty - r, tx + r, ty + r,
+                           outline=GREEN, fill="", width=2, dash=(4, 3))
+            cv.create_line(tx - r - 6, ty, tx + r + 6, ty,
+                           fill=GREEN, width=1)
+            cv.create_line(tx, ty - r - 6, tx, ty + r + 6,
+                           fill=GREEN, width=1)
+            cv.create_text(tx + r + 5, ty - r - 2, text="TARGET",
+                           fill=GREEN, font=(FNT, 7, "bold"), anchor="sw")
+
+        # ── Arm links ─────────────────────────────────────────────────────────
+        pts2 = [proj(p) for p in self._pts]
+        # Shadow pass
+        for i in range(len(pts2) - 1):
+            lw = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*pts2[i], *pts2[i + 1],
+                           fill="#0d1520", width=lw + 4, capstyle="round")
+        # Color pass
+        for i in range(len(pts2) - 1):
+            col = JCOLORS[min(i, 5)]
+            lw  = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*pts2[i], *pts2[i + 1],
+                           fill=col, width=lw, capstyle="round", joinstyle="round")
+
+        # ── Joint markers ─────────────────────────────────────────────────────
+        for i, (sx, sy) in enumerate(pts2):
+            if i == 0:
+                s = 7
+                cv.create_rectangle(sx - s, sy - s, sx + s, sy + s,
+                                    fill=JCOLORS[0], outline="#ffffff", width=1)
+                cv.create_text(sx, sy - s - 5, text="BASE",
+                               fill=JCOLORS[0], font=(FNT, 6, "bold"), anchor="s")
+            elif i == len(pts2) - 1:
+                r = 9
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[5], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 5, text="TIP",
+                               fill=JCOLORS[5], font=(FNT, 7, "bold"), anchor="s")
+            else:
+                r = 5
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[i], outline="#ffffff", width=1)
+                cv.create_text(sx + r + 4, sy, text=f"J{i+1}",
+                               fill=JCOLORS[i], font=(FNT, 7), anchor="w")
+
+        # ── HUD ───────────────────────────────────────────────────────────────
+        tip = self._pts[-1]
+        hud = (f"TIP  X:{tip[0]*1000:+.1f}  "
+               f"Y:{tip[1]*1000:+.1f}  "
+               f"Z:{tip[2]*1000:+.1f} mm")
+        cv.create_text(8, h - 8, text=hud,
+                       fill="#4a6080", font=(FNT, 8), anchor="sw")
+        cv.create_text(w - 8, h - 8,
+                       text=f"zoom {self._zoom[view_idx]:.2f}x",
+                       fill="#2e4060", font=(FNT, 7), anchor="se")
+
+    def _proj3d(self, x, y, z, scl, cx, cy):
+        yaw   = math.radians(self._yaw)
+        pitch = math.radians(self._pitch)
+        rx =  x * math.cos(yaw) - y * math.sin(yaw)
+        ry =  x * math.sin(yaw) + y * math.cos(yaw)
+        ry2 =  ry * math.cos(pitch) - z * math.sin(pitch)
+        rz2 =  ry * math.sin(pitch) + z * math.cos(pitch)
+        dist = max(1.8 + rz2 * 0.35, 0.3)
+        return cx + rx/dist*scl, cy - ry2/dist*scl
+
+    def _draw_3d(self, cv, w, h):
+        mg  = 36
+        scl = self._BASE_SCL3D * self._zoom[3]
+        cx, cy = w * 0.5, h * 0.52
+
+        # ── Floor grid ────────────────────────────────────────────────────────
+        step, n = 0.10, 5
+        for i in range(-n, n + 1):
+            is_orig = (i == 0)
+            gcol = "#253548" if is_orig else BORDER
+            glw  = 1.5       if is_orig else 1
+            x0, y0 = self._proj3d(-n * step, i * step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d( n * step, i * step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=gcol, width=glw)
+            x0, y0 = self._proj3d(i * step, -n * step, 0, scl, cx, cy)
+            x1, y1 = self._proj3d(i * step,  n * step, 0, scl, cx, cy)
+            cv.create_line(x0, y0, x1, y1, fill=gcol, width=glw)
+
+        # ── World-frame axes ──────────────────────────────────────────────────
+        axis_len = 0.35
+        for (vx, vy, vz), lbl, col in [
+                ((axis_len, 0, 0), "X", "#e05050"),
+                ((0, axis_len, 0), "Y", "#50c050"),
+                ((0, 0, axis_len), "Z", "#5090ff")]:
+            ox, oy = self._proj3d(0, 0, 0, scl, cx, cy)
+            ax, ay = self._proj3d(vx, vy, vz, scl, cx, cy)
+            cv.create_line(ox, oy, ax, ay, fill=col, width=2, arrow="last")
+            cv.create_text(ax + 6, ay, text=lbl, fill=col,
+                           font=(FNT, 9, "bold"))
+
+        # ── Target ────────────────────────────────────────────────────────────
+        if self._target_xyz:
+            tx, ty = self._proj3d(*self._target_xyz, scl, cx, cy)
+            r = 11
+            cv.create_oval(tx - r, ty - r, tx + r, ty + r,
+                           outline=GREEN, fill="", width=2, dash=(4, 2))
+            cv.create_line(tx - r, ty, tx + r, ty, fill=GREEN, width=1)
+            cv.create_line(tx, ty - r, tx, ty + r, fill=GREEN, width=1)
+            cv.create_text(tx + r + 5, ty, text="TARGET",
+                           fill=GREEN, font=(FNT, 7, "bold"), anchor="w")
+
+        # ── Arm links — shadow then color ─────────────────────────────────────
+        prj = [self._proj3d(p[0], p[1], p[2], scl, cx, cy) for p in self._pts]
+        for i in range(len(prj) - 1):
+            lw = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*prj[i], *prj[i + 1],
+                           fill="#0a1520", width=lw + 4, capstyle="round")
+        for i in range(len(prj) - 1):
+            col = JCOLORS[min(i, 5)]
+            lw  = 6 if i == 0 else (5 if i < 4 else 4)
+            cv.create_line(*prj[i], *prj[i + 1],
+                           fill=col, width=lw, capstyle="round")
+
+        # ── Joint markers ─────────────────────────────────────────────────────
+        for i, (sx, sy) in enumerate(prj):
+            if i == 0:
+                r = 8
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[0], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 6, text="BASE",
+                               fill=JCOLORS[0], font=(FNT, 7, "bold"), anchor="s")
+            elif i == len(prj) - 1:
+                r = 10
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[5], outline="#ffffff", width=2)
+                cv.create_text(sx, sy - r - 6, text="TIP",
+                               fill=JCOLORS[5], font=(FNT, 7, "bold"), anchor="s")
+            else:
+                r = 6
+                cv.create_oval(sx - r, sy - r, sx + r, sy + r,
+                               fill=JCOLORS[i], outline="#ffffff", width=1)
+                cv.create_text(sx + r + 4, sy, text=_JNAMES[i],
+                               fill=JCOLORS[i], font=(FNT, 7), anchor="w")
+
+        # ── HUD ───────────────────────────────────────────────────────────────
+        tip = self._pts[-1]
+        cv.create_text(8, h - 8,
+                       text=(f"TIP  X:{tip[0]*1000:+.1f}  "
+                             f"Y:{tip[1]*1000:+.1f}  "
+                             f"Z:{tip[2]*1000:+.1f} mm"),
+                       fill="#4a6080", font=(FNT, 8), anchor="sw")
+        cv.create_text(w - 8, 8,
+                       text=f"yaw {self._yaw:.0f}  pitch {self._pitch:.0f}  "
+                            f"zoom {self._zoom[3]:.2f}x",
+                       fill=MUTED, font=(FNT, 7), anchor="ne")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# IK RESULT TABLE
+# ══════════════════════════════════════════════════════════════════════════════
+
+class IKTable(tk.Frame):
+    def __init__(self, parent, **kw):
+        super().__init__(parent, bg=CARD,
+                         highlightbackground=BORDER, highlightthickness=1, **kw)
+        self._rows = []
+        self._build()
+
+    def _build(self):
+        hdr = tk.Frame(self, bg=PANEL)
+        hdr.pack(fill="x")
+        for txt, w in [("Motor",9),("Name",10),("Current°",10),
+                       ("Target°",10),("Δ°",8),("Speed°/s",11),("Status",8)]:
+            tk.Label(hdr, text=txt, font=(FNT,8,"bold"),
+                     fg=MUTED, bg=PANEL, width=w, anchor="w"
+                     ).pack(side="left", padx=3, pady=3)
+
+        for i in range(6):
+            bg  = CARD if i%2==0 else INPUT
+            row = tk.Frame(self, bg=bg)
+            row.pack(fill="x")
+            cells = {}
+            defs  = [("motor",9,JCOLORS[i]),("name",10,DIM),
+                     ("cur",10,DIM),("tgt",10,TEXT),
+                     ("dlt",8,TEXT),("spd",11,ACCENT),("sts",8,DIM)]
+            for key, w, fg in defs:
+                lbl = tk.Label(row, text="—", font=(FNT,9),
+                               fg=fg, bg=bg, width=w, anchor="w")
+                lbl.pack(side="left", padx=3, pady=2)
+                cells[key] = lbl
+            cells["motor"].config(text=f"Motor {i+1}")
+            cells["name"].config(text=_JNAMES[i])
+            cells["cur"].config(text="  0.0°")
+            self._rows.append(cells)
+
+    def update_row(self, i, cur_deg, tgt_deg, spd):
+        if not 0 <= i < 6: return
+        c    = self._rows[i]
+        dlt  = tgt_deg - cur_deg
+        clmp = spd >= _SPEED_LIMITS[i] * 0.95
+        c["cur"].config(text=f"{cur_deg:+.1f}°",  fg=DIM)
+        c["tgt"].config(text=f"{tgt_deg:+.1f}°",  fg=TEXT)
+        c["dlt"].config(text=f"{dlt:+.1f}°",
+                        fg=YELLOW if abs(dlt)>0.5 else GREEN)
+        c["spd"].config(text=f"{spd:.1f}°/s",
+                        fg=RED if clmp else ACCENT)
+        c["sts"].config(text="⚠CLAMP" if clmp else "✓ OK",
+                        fg=RED if clmp else GREEN)
+
+    def set_current(self, angles):
+        for i, a in enumerate(angles):
+            self._rows[i]["cur"].config(text=f"{a:+.1f}°")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOINT JOG PANEL
+# ══════════════════════════════════════════════════════════════════════════════
+
+class JointJogPanel(tk.Frame):
+    """
+    Industrial Joint Jog Interface — full manual control of all 6 motors.
+
+    Features per joint:
+      • Live position bar     — fills proportionally within joint limits
+      • Live readout          — position, velocity, current (°, °/s, A)
+      • LOCK toggle           — freeze this joint; jog commands skip locked joints
+      • − / + jog buttons     — hold for continuous motion at set speed
+      • Step entry            — configurable step size (°) for single nudge
+      • Direct angle entry    — type exact angle → SEND immediately
+      • Speed slider          — 1 … max °/s per joint
+
+    Global controls:
+      • JOG STEP size selector (1° 5° 10° 45° 90°)
+      • ZERO ALL / HOME / STOP ALL / E-STOP
+      • Cartesian Jog sub-panel (ΔX / ΔY / ΔZ nudge via mini-IK)
+      • Record Pose → appends current angles to an in-memory pose list
+      • Export Poses → saves recorded poses to CSV
+    """
+
+    _DEFAULT_JOG_SPEED = [40.0, 30.0, 30.0, 60.0, 60.0, 80.0]   # °/s per joint
+
+    def __init__(self, parent, get_robot, get_angles, set_viz_angles, log_fn, **kw):
+        super().__init__(parent, bg=BG, **kw)
+        self._get_robot       = get_robot
+        self._get_angles      = get_angles        # () → list[float] (degrees)
+        self._set_viz_angles  = set_viz_angles    # (angles, duration) → None
+        self._log             = log_fn
+
+        # Per-joint state
+        self._cur_ang   = [0.0] * 6
+        self._locked     = [tk.BooleanVar(value=False) for _ in range(6)]
+        self._speed_vars = [tk.DoubleVar(value=self._DEFAULT_JOG_SPEED[i])
+                            for i in range(6)]
+        self._angle_vars = [tk.StringVar(value="0.0") for _ in range(6)]
+        self._step_var   = tk.StringVar(value="5")
+        self._jog_jobs   = {}    # motor_id → after() job while button held
+        self._recorded_poses: list[list[float]] = []
+
+        # Live feedback display refs (populated in _build)
+        self._pos_bars    = []   # canvas arc indicators
+        self._pos_lbls    = []
+        self._vel_lbls    = []
+        self._cur_lbls    = []
+
+        self._build()
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+
+    def _build(self):
+        # ── Global controls strip ─────────────────────────────────────────────
+        gbar = tk.Frame(self, bg=PANEL, height=40)
+        gbar.pack(fill="x"); gbar.pack_propagate(False)
+
+        tk.Label(gbar, text="JOINT JOG  —  MANUAL CONTROL",
+                 font=(FNT,10,"bold"), fg=ACCENT, bg=PANEL
+                 ).pack(side="left", padx=12, pady=8)
+
+        # Step selector
+        tk.Label(gbar, text="STEP:", font=(FNT,8), fg=MUTED, bg=PANEL
+                 ).pack(side="left", padx=(12,4))
+        for s in ["1","5","10","45","90"]:
+            tk.Radiobutton(gbar, text=f"{s}°", variable=self._step_var, value=s,
+                           font=(FNT,8,"bold"), bg=PANEL, fg=TEXT,
+                           selectcolor=INPUT, activebackground=PANEL,
+                           indicatoron=False, relief="flat", cursor="hand2",
+                           padx=6, pady=2
+                           ).pack(side="left", padx=1)
+
+        # Global action buttons
+        for txt, col, fg2, cmd in [
+            ("ZERO ALL",  INPUT,  TEXT,   self._zero_all),
+            ("HOME",      INPUT,  MUTED,  self._home_all),
+            ("STOP ALL",  YELLOW, BG,     self._stop_all),
+            ("⚠ E-STOP",  RED,    TEXT,   self._estop),
+        ]:
+            tk.Button(gbar, text=txt, font=(FNT,8,"bold"),
+                      bg=col, fg=fg2, relief="flat", cursor="hand2",
+                      padx=8, pady=3,
+                      command=cmd).pack(side="right", padx=3)
+
+        # ── Column headers ────────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=PANEL)
+        hdr.pack(fill="x")
+        for txt, w in [
+            ("",4), ("JOINT",8), ("POSITION",18), ("LIVE  pos/vel/cur",22),
+            ("LOCK",5), ("  −  JOG  +",14), ("STEP",7),
+            ("TARGET °",10), ("SPEED °/s",14)
+        ]:
+            tk.Label(hdr, text=txt, font=(FNT,7,"bold"), fg=MUTED, bg=PANEL,
+                     width=w, anchor="w").pack(side="left", padx=2, pady=3)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        # ── One row per joint ─────────────────────────────────────────────────
+        for i in range(6):
+            self._build_joint_row(i)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", pady=(4,0))
+
+        # ── Cartesian jog sub-panel ───────────────────────────────────────────
+        self._build_cart_jog()
+
+        # ── Record / Export ───────────────────────────────────────────────────
+        self._build_record_panel()
+
+    def _build_joint_row(self, i: int):
+        cfg_lim = _JOINT_LIMITS_DEG[i]
+        color   = JCOLORS[i]
+        bg      = BG if i % 2 == 0 else CARD
+
+        row = tk.Frame(self, bg=bg)
+        row.pack(fill="x", pady=2)
+
+        # ── Color swatch ──────────────────────────────────────────────────────
+        tk.Frame(row, bg=color, width=5).pack(side="left", fill="y")
+
+        # ── Joint label ───────────────────────────────────────────────────────
+        tk.Label(row, text=f"J{i+1}\n{_JNAMES[i][:5]}",
+                 font=(FNT,8,"bold"), fg=color, bg=bg, width=6,
+                 anchor="center").pack(side="left", padx=(4,2))
+
+        # ── Position arc gauge (canvas) ───────────────────────────────────────
+        c = tk.Canvas(row, width=80, height=36, bg=bg, highlightthickness=0)
+        c.pack(side="left", padx=4)
+        # Track arc
+        c.create_arc(4, 4, 76, 68, start=0, extent=180,
+                     style="arc", outline=INPUT, width=4)
+        # Value arc (will be updated)
+        bar_item = c.create_arc(4, 4, 76, 68, start=0, extent=0,
+                                style="arc", outline=color, width=4)
+        # Min/Max labels
+        c.create_text(4,  32, text=f"{cfg_lim[0]:.0f}°",
+                      fill=MUTED, font=(FNT,6), anchor="w")
+        c.create_text(76, 32, text=f"{cfg_lim[1]:.0f}°",
+                      fill=MUTED, font=(FNT,6), anchor="e")
+        self._pos_bars.append((c, bar_item, cfg_lim))
+
+        # ── Live readout ──────────────────────────────────────────────────────
+        rf = tk.Frame(row, bg=bg, width=130)
+        rf.pack(side="left", padx=4); rf.pack_propagate(False)
+
+        pl = tk.Label(rf, text="  0.0°", font=(FNT,10,"bold"),
+                      fg=color, bg=bg, anchor="w")
+        pl.pack(anchor="w")
+        vl = tk.Label(rf, text="vel:   0.0°/s", font=(FNT,7),
+                      fg=MUTED, bg=bg, anchor="w")
+        vl.pack(anchor="w")
+        cl = tk.Label(rf, text="cur:   0.00 A", font=(FNT,7),
+                      fg=MUTED, bg=bg, anchor="w")
+        cl.pack(anchor="w")
+        self._pos_lbls.append(pl)
+        self._vel_lbls.append(vl)
+        self._cur_lbls.append(cl)
+
+        # ── Lock toggle ───────────────────────────────────────────────────────
+        tk.Checkbutton(row, text="🔒", variable=self._locked[i],
+                       font=(FNT,9), bg=bg, fg=MUTED,
+                       selectcolor=RED, activebackground=bg,
+                       indicatoron=False, relief="flat",
+                       cursor="hand2", padx=4
+                       ).pack(side="left", padx=4)
+
+        # ── Jog buttons (press-and-hold) ──────────────────────────────────────
+        jf = tk.Frame(row, bg=bg)
+        jf.pack(side="left", padx=2)
+
+        b_neg = tk.Button(jf, text=" − ", font=(FNT,11,"bold"),
+                          bg=INPUT, fg=color, relief="flat", cursor="hand2",
+                          padx=8, pady=2)
+        b_neg.pack(side="left", padx=1)
+        b_pos = tk.Button(jf, text=" + ", font=(FNT,11,"bold"),
+                          bg=INPUT, fg=color, relief="flat", cursor="hand2",
+                          padx=8, pady=2)
+        b_pos.pack(side="left", padx=1)
+
+        # Bind press-and-hold for continuous jog
+        b_neg.bind("<ButtonPress-1>",   lambda e, idx=i: self._jog_start(idx, -1))
+        b_neg.bind("<ButtonRelease-1>", lambda e, idx=i: self._jog_stop(idx))
+        b_pos.bind("<ButtonPress-1>",   lambda e, idx=i: self._jog_start(idx, +1))
+        b_pos.bind("<ButtonRelease-1>", lambda e, idx=i: self._jog_stop(idx))
+
+        # Step jog button (single nudge using step_var)
+        tk.Button(row, text="STEP−", font=(FNT,7,"bold"),
+                  bg=INPUT, fg=DIM, relief="flat", cursor="hand2",
+                  padx=4, pady=2,
+                  command=lambda idx=i: self._step_jog(idx, -1)
+                  ).pack(side="left", padx=1)
+        tk.Button(row, text="STEP+", font=(FNT,7,"bold"),
+                  bg=INPUT, fg=DIM, relief="flat", cursor="hand2",
+                  padx=4, pady=2,
+                  command=lambda idx=i: self._step_jog(idx, +1)
+                  ).pack(side="left", padx=1)
+
+        # ── Direct angle entry + SEND ─────────────────────────────────────────
+        tk.Entry(row, textvariable=self._angle_vars[i], width=7,
+                 font=(FNT,9), bg=INPUT, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1
+                 ).pack(side="left", padx=(6,1))
+        tk.Label(row, text="°", font=(FNT,8), fg=MUTED, bg=bg
+                 ).pack(side="left")
+        tk.Button(row, text="SEND", font=(FNT,8,"bold"),
+                  bg=color, fg=BG, relief="flat", cursor="hand2",
+                  padx=6, pady=2,
+                  command=lambda idx=i: self._send_angle(idx)
+                  ).pack(side="left", padx=4)
+
+        # ── Speed slider ──────────────────────────────────────────────────────
+        tk.Scale(row,
+                 from_=1, to=_SPEED_LIMITS[i],
+                 orient="horizontal",
+                 variable=self._speed_vars[i],
+                 resolution=1, showvalue=True,
+                 length=110,
+                 font=(FNT,7),
+                 bg=bg, fg=color, troughcolor=INPUT,
+                 highlightthickness=0, bd=0,
+                 relief="flat", sliderrelief="flat",
+                 activebackground=color
+                 ).pack(side="left", padx=(4,6))
+
+        # Limit labels
+        tk.Label(row, text=f"[{cfg_lim[0]:.0f}°…{cfg_lim[1]:.0f}°]",
+                 font=(FNT,6), fg=MUTED, bg=bg).pack(side="left", padx=2)
+
+    def _build_cart_jog(self):
+        """Cartesian jogging — nudge tool-tip along X/Y/Z by a fixed delta."""
+        cc = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        cc.pack(fill="x", padx=4, pady=(6,4))
+
+        tk.Label(cc, text="CARTESIAN JOG  —  nudge tool-tip by Δ mm",
+                 font=(FNT,8,"bold"), fg=BLUE, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(6,4))
+
+        row = tk.Frame(cc, bg=CARD); row.pack(padx=10, pady=(0,8))
+
+        self._cjog_step = tk.StringVar(value="10")
+        tk.Label(row, text="Δ:", font=(FNT,9,"bold"), fg=MUTED, bg=CARD
+                 ).pack(side="left")
+        tk.Entry(row, textvariable=self._cjog_step, width=5,
+                 font=(FNT,9), bg=INPUT, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1
+                 ).pack(side="left", padx=(2,8))
+        tk.Label(row, text="mm", font=(FNT,8), fg=MUTED, bg=CARD
+                 ).pack(side="left", padx=(0,12))
+
+        for axis, col, direction_pairs in [
+            ("X", ACCENT,  [("+X", [+1,0,0]), ("−X", [-1,0,0])]),
+            ("Y", BLUE,    [("+Y", [0,+1,0]), ("−Y", [0,-1,0])]),
+            ("Z", YELLOW,  [("+Z", [0,0,+1]), ("−Z", [0,0,-1])]),
+        ]:
+            tk.Label(row, text=axis, font=(FNT,9,"bold"), fg=col, bg=CARD
+                     ).pack(side="left", padx=(4,2))
+            for label, direction in direction_pairs:
+                d = direction   # capture
+                tk.Button(row, text=label, font=(FNT,8,"bold"),
+                          bg=INPUT, fg=col, relief="flat", cursor="hand2",
+                          padx=6, pady=3,
+                          command=lambda dv=d: self._cart_jog(dv)
+                          ).pack(side="left", padx=1)
+            tk.Label(row, text="", bg=CARD, width=1).pack(side="left")
+
+    def _build_record_panel(self):
+        rp = tk.Frame(self, bg=PANEL, highlightbackground=BORDER, highlightthickness=1)
+        rp.pack(fill="x", padx=4, pady=(0,6))
+        tk.Label(rp, text="POSE RECORDER",
+                 font=(FNT,8,"bold"), fg=MUTED, bg=PANEL
+                 ).pack(side="left", padx=10, pady=6)
+
+        self._lbl_recorded = tk.Label(rp, text="0 poses recorded",
+                                      font=(FNT,8), fg=DIM, bg=PANEL)
+        self._lbl_recorded.pack(side="left", padx=8)
+
+        for txt, col, fg2, cmd in [
+            ("⬤  RECORD POSE",  ACCENT, BG,   self._record_pose),
+            ("CLEAR",           INPUT,  MUTED, self._clear_poses),
+            ("EXPORT CSV",      BLUE,   BG,    self._export_poses),
+        ]:
+            tk.Button(rp, text=txt, font=(FNT,8,"bold"),
+                      bg=col, fg=fg2, relief="flat", cursor="hand2",
+                      padx=8, pady=3,
+                      command=cmd).pack(side="right", padx=3, pady=4)
+
+    # ── Live feedback update (called from main monitor) ────────────────────────
+
+    def update_feedback(self, motor_id: int, pos: float, vel: float, cur: float):
+        i = motor_id - 1
+        if not 0 <= i < 6:
+            return
+        self._cur_ang[i] = pos
+
+        # Update angle entry box only if not being edited
+        try:
+            # Only sync if field shows a stale value (not mid-typing)
+            existing = float(self._angle_vars[i].get())
+            if abs(existing - pos) > 2.0:
+                self._angle_vars[i].set(f"{pos:.1f}")
+        except ValueError:
+            pass
+
+        # Labels
+        self._pos_lbls[i].config(text=f"{pos:+.1f}°")
+        vel_col = ACCENT if abs(vel) > 0.5 else MUTED
+        self._vel_lbls[i].config(text=f"vel: {vel:+.1f}°/s", fg=vel_col)
+        cur_col = YELLOW if cur > 15 else (RED if cur > 25 else MUTED)
+        self._cur_lbls[i].config(text=f"cur: {cur:.2f} A", fg=cur_col)
+
+        # Arc gauge
+        c, bar, (lo, hi) = self._pos_bars[i]
+        rng   = hi - lo
+        ratio = (pos - lo) / rng if rng > 0 else 0.5
+        ratio = max(0.0, min(1.0, ratio))
+        extent = ratio * 180.0
+        c.itemconfig(bar, extent=extent)
+
+    def refresh_from_sim(self):
+        """In simulation, pull angles from get_angles() and update display."""
+        angles = self._get_angles()
+        for i, pos in enumerate(angles):
+            self.update_feedback(i + 1, pos, 0.0, 0.0)
+        self._cur_ang = list(angles)
+
+    # ── Jog logic ─────────────────────────────────────────────────────────────
+
+    def _jog_start(self, i: int, direction: int):
+        """Start continuous jog — fires every 80ms while button held."""
+        if self._locked[i].get():
+            return
+        self._jog_stop(i)   # cancel any existing job for this joint
+        self._do_jog(i, direction)
+
+    def _do_jog(self, i: int, direction: int):
+        spd  = self._speed_vars[i].get()
+        step = spd * 0.08 * direction   # 80ms tick → degrees per tick
+        self._move_joint_by(i, step)
+        self._jog_jobs[i] = self.after(80, lambda: self._do_jog(i, direction))
+
+    def _jog_stop(self, i: int):
+        if i in self._jog_jobs:
+            self.after_cancel(self._jog_jobs.pop(i))
+        # Send stop to hardware
+        robot = self._get_robot()
+        if robot:
+            try:
+                if HAS_ROBOT:
+                    from robot_controller import DEFAULT_JOINT_CONFIG
+                    cfg = DEFAULT_JOINT_CONFIG[i]
+                    threading.Thread(target=robot.motors[cfg.motor_id].stop,
+                                     daemon=True).start()
+            except Exception:
+                pass
+
+    def _step_jog(self, i: int, direction: int):
+        if self._locked[i].get():
+            self._log(f"[JOG] J{i+1} is LOCKED — unlock first", "warn")
+            return
+        try:
+            step_deg = float(self._step_var.get()) * direction
+        except ValueError:
+            step_deg = 5.0 * direction
+        self._move_joint_by(i, step_deg)
+        self._log(f"[JOG] J{i+1} step {step_deg:+.1f}°  →  {self._cur_ang[i]:.1f}°")
+
+    def _move_joint_by(self, i: int, delta_deg: float):
+        """Move joint i by delta_deg from its current position."""
+        lo, hi = _JOINT_LIMITS_DEG[i]
+        new_ang = max(lo, min(hi, self._cur_ang[i] + delta_deg))
+        self._cur_ang[i] = new_ang
+        self._angle_vars[i].set(f"{new_ang:.1f}")
+
+        # Update visualizer immediately
+        self._set_viz_angles(list(self._cur_ang), 0.08)
+
+        # Send to hardware
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                cfg = DEFAULT_JOINT_CONFIG[i]
+                spd = self._speed_vars[i].get()
+                threading.Thread(
+                    target=robot.motors[cfg.motor_id].set_position,
+                    kwargs={"position_deg": new_ang,
+                            "max_speed_dps": spd,
+                            "wait": False},
+                    daemon=True).start()
+            except Exception as e:
+                self._log(f"[JOG] HW error J{i+1}: {e}", "err")
+
+    def _send_angle(self, i: int):
+        """Send the direct angle entry value to this joint."""
+        if self._locked[i].get():
+            self._log(f"[JOG] J{i+1} is LOCKED", "warn")
+            return
+        try:
+            target = float(self._angle_vars[i].get())
+        except ValueError:
+            messagebox.showerror("Input Error", f"J{i+1}: enter a valid number.")
+            return
+        lo, hi = _JOINT_LIMITS_DEG[i]
+        if not lo <= target <= hi:
+            messagebox.showerror("Limit Exceeded",
+                                 f"J{i+1}: {target:.1f}° is outside [{lo}°, {hi}°].")
+            return
+        spd = self._speed_vars[i].get()
+        self._log(f"[JOG] J{i+1} SEND → {target:+.1f}° @ {spd:.0f}°/s")
+        self._cur_ang[i] = target
+        self._set_viz_angles(list(self._cur_ang), 0.5)
+
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                cfg = DEFAULT_JOINT_CONFIG[i]
+                threading.Thread(
+                    target=robot.motors[cfg.motor_id].set_position,
+                    kwargs={"position_deg": target,
+                            "max_speed_dps": spd,
+                            "wait": False},
+                    daemon=True).start()
+            except Exception as e:
+                self._log(f"[JOG] HW error: {e}", "err")
+
+    def _cart_jog(self, direction: list):
+        """Nudge end-effector by Δmm in world space via mini-IK."""
+        try:
+            delta_mm = float(self._cjog_step.get())
+        except ValueError:
+            delta_mm = 10.0
+
+        tip_m, _ = _fk(self._cur_ang)
+        new_target = [tip_m[j] + direction[j] * delta_mm / 1000.0
+                      for j in range(3)]
+
+        self._log(f"[CART JOG] Δ {'+' if direction[0]+direction[1]+direction[2]>0 else ''}"
+                  f"{'XYZ'[direction.index(max(direction, key=abs))]} {delta_mm:.0f}mm")
+
+        def solve():
+            angles, err, ok = _ik(new_target, start_deg=self._cur_ang)
+            if ok:
+                self.after(0, lambda: self._apply_cart_jog(angles, new_target, err))
+            else:
+                self.after(0, lambda: self._log(
+                    f"[CART JOG] IK failed — target out of reach (err={err*1000:.1f}mm)",
+                    "warn"))
+
+        threading.Thread(target=solve, daemon=True).start()
+
+    def _apply_cart_jog(self, angles, target, err):
+        self._cur_ang = list(angles)
+        for i, a in enumerate(angles):
+            self._angle_vars[i].set(f"{a:.1f}")
+        self._set_viz_angles(list(self._cur_ang), 0.3)
+
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    spd = self._speed_vars[i].get()
+                    threading.Thread(
+                        target=robot.motors[cfg.motor_id].set_position,
+                        kwargs={"position_deg": float(angles[i]),
+                                "max_speed_dps": float(spd),
+                                "wait": False},
+                        daemon=True).start()
+                    time.sleep(0.001)
+            except Exception as e:
+                self._log(f"[CART JOG] HW error: {e}", "err")
+
+    # ── Global controls ───────────────────────────────────────────────────────
+
+    def _zero_all(self):
+        for i in range(6):
+            if not self._locked[i].get():
+                self._angle_vars[i].set("0.0")
+                self._cur_ang[i] = 0.0
+        self._set_viz_angles(list(self._cur_ang), 1.0)
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    if not self._locked[i].get():
+                        spd = self._speed_vars[i].get()
+                        threading.Thread(
+                            target=robot.motors[cfg.motor_id].set_position,
+                            kwargs={"position_deg": 0.0,
+                                    "max_speed_dps": spd, "wait": False},
+                            daemon=True).start()
+            except Exception:
+                pass
+        self._log("[JOG] ZERO ALL (unlocked joints)")
+
+    def _home_all(self):
+        default = [0.0, 45.0, 80.0, -35.0, 0.0, 0.0]
+        for i in range(6):
+            if not self._locked[i].get():
+                self._cur_ang[i] = default[i]
+                self._angle_vars[i].set(f"{default[i]:.1f}")
+        self._set_viz_angles(list(self._cur_ang), 1.5)
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    if not self._locked[i].get():
+                        spd = self._speed_vars[i].get()
+                        threading.Thread(
+                            target=robot.motors[cfg.motor_id].set_position,
+                            kwargs={"position_deg": default[i],
+                                    "max_speed_dps": spd, "wait": False},
+                            daemon=True).start()
+            except Exception:
+                pass
+        self._log("[JOG] HOME ALL (unlocked joints)")
+
+    def _stop_all(self):
+        # Cancel all jog jobs
+        for i in list(self._jog_jobs.keys()):
+            self._jog_stop(i)
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            threading.Thread(target=robot.stop_all, daemon=True).start()
+        self._log("[JOG] STOP ALL")
+
+    def _estop(self):
+        for i in list(self._jog_jobs.keys()):
+            self.after_cancel(self._jog_jobs.pop(i))
+        robot = self._get_robot()
+        if robot and HAS_ROBOT:
+            robot.estop()
+        self._log("[JOG] ⚠ E-STOP", "err")
+
+    # ── Pose recorder ─────────────────────────────────────────────────────────
+
+    def _record_pose(self):
+        pose = list(self._cur_ang)
+        self._recorded_poses.append(pose)
+        n = len(self._recorded_poses)
+        self._lbl_recorded.config(text=f"{n} pose{'s' if n>1 else ''} recorded",
+                                  fg=GREEN)
+        self._log(f"[JOG] Pose {n} recorded: " +
+                  "  ".join(f"J{j+1}:{a:+.1f}°" for j, a in enumerate(pose)))
+
+    def _clear_poses(self):
+        self._recorded_poses.clear()
+        self._lbl_recorded.config(text="0 poses recorded", fg=DIM)
+        self._log("[JOG] Pose list cleared.")
+
+    def _export_poses(self):
+        if not self._recorded_poses:
+            messagebox.showwarning("No Poses", "Record at least one pose first.")
+            return
+        from tkinter import filedialog
+        path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV","*.csv")],
+            title="Export Poses to CSV")
+        if not path:
+            return
+        import csv
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["step","delay_s","j1_angle","j1_speed",
+                        "j2_angle","j2_speed","j3_angle","j3_speed",
+                        "j4_angle","j4_speed","j5_angle","j5_speed",
+                        "j6_angle","j6_speed"])
+            for k, pose in enumerate(self._recorded_poses, 1):
+                row = [f"Pose {k}", "1.0"]
+                for j, a in enumerate(pose):
+                    row += [f"{a:.2f}", f"{self._speed_vars[j].get():.0f}"]
+                w.writerow(row)
+        self._log(f"[JOG] Exported {len(self._recorded_poses)} poses → {path}", "ok")
+        messagebox.showinfo("Export OK",
+                            f"Saved {len(self._recorded_poses)} poses to:\n{path}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN APPLICATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+class CartesianGUI(tk.Tk):
+    def __init__(self, simulated=True, port="COM3", bustype="slcan"):
+        super().__init__()
+        self.title("⬡  6-Axis Industrial Robot  ·  Cartesian IK + Joint Jog  ·  v4")
+        self.configure(bg=BG)
+        self.minsize(1460, 940)
+
+        self._sim       = simulated
+        self._port      = port
+        self._bus_t     = bustype
+        self.robot      = None
+        self.bus        = None
+        self._connected = False
+        self._cur_ang   = [0.0] * 6
+        self._ik_ang    = None
+        self._ik_err    = None
+        self._executing = False
+        self._mon_job   = None
+
+        _h = _QH()
+        _h.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
+        logging.getLogger().addHandler(_h)
+        logging.getLogger().setLevel(logging.INFO)
+
+        self._build()
+        self._poll_log()
+        self.protocol("WM_DELETE_WINDOW", self._close)
+        # Realistic default pose: arm reaching forward at elbow-up configuration
+        _default_angles = [0.0, 45.0, 80.0, -35.0, 0.0, 0.0]
+        self._cur_ang = list(_default_angles)
+        self.after(200, lambda: self._viz.set_angles(_default_angles, duration=0.0))
+
+        if simulated:
+            self.after(400, self._connect)
+
+        # Start monitor immediately (simulation or real) so jog panel updates
+        self._start_monitor()
+
+    def _build(self):
+        top = tk.Frame(self, bg=PANEL, height=52)
+        top.pack(fill="x"); top.pack_propagate(False)
+        tk.Label(top, text="⬡  6-AXIS INDUSTRIAL ROBOT  ·  CARTESIAN + JOG CONTROL",
+                 font=(FNT,13,"bold"), fg=ACCENT, bg=PANEL
+                 ).pack(side="left", padx=18, pady=12)
+        self._lbl_c = tk.Label(top, text="● DISCONNECTED",
+                                font=(FNT,9,"bold"), fg=RED, bg=PANEL)
+        self._lbl_c.pack(side="right", padx=16)
+        mode = "SIMULATION" if self._sim else f"REAL · {self._port}"
+        tk.Label(top, text=mode, font=(FNT,8), fg=MUTED, bg=PANEL
+                 ).pack(side="right", padx=4)
+        self._btn(top,"DISCONNECT",PANEL,RED,  self._disconnect).pack(side="right",padx=4)
+        self._btn(top,"CONNECT",   ACCENT,BG,  self._connect).pack(side="right",padx=4)
+
+        body = tk.Frame(self, bg=BG)
+        body.pack(fill="both", expand=True)
+
+        # ── Left panel: tab bar + two switchable panels ───────────────────────
+        left_outer = tk.Frame(body, bg=BG, width=460)
+        left_outer.pack(side="left", fill="y", padx=(10,5), pady=8)
+        left_outer.pack_propagate(False)
+
+        # Tab switcher buttons
+        tab_bar = tk.Frame(left_outer, bg=BG)
+        tab_bar.pack(fill="x", pady=(0,4))
+
+        self._tab_cart_btn = tk.Button(
+            tab_bar, text="  ⊕  CARTESIAN IK  ",
+            font=(FNT,9,"bold"), bg=BLUE, fg=BG,
+            relief="flat", cursor="hand2",
+            command=self._show_cartesian)
+        self._tab_cart_btn.pack(side="left", padx=(0,3))
+
+        self._tab_jog_btn = tk.Button(
+            tab_bar, text="  ⟳  JOINT JOG  ",
+            font=(FNT,9,"bold"), bg=PANEL, fg=MUTED,
+            relief="flat", cursor="hand2",
+            command=self._show_jog)
+        self._tab_jog_btn.pack(side="left")
+
+        # Scrollable container for the left panels
+        lc = tk.Canvas(left_outer, bg=BG, highlightthickness=0, width=450)
+        ls = ttk.Scrollbar(left_outer, orient="vertical", command=lc.yview)
+        lc.configure(yscrollcommand=ls.set)
+        ls.pack(side="right", fill="y")
+        lc.pack(side="left", fill="both", expand=True)
+
+        def _mw(e): lc.yview_scroll(int(-1*(e.delta/120)), "units")
+        lc.bind_all("<MouseWheel>", _mw)
+
+        # CARTESIAN panel (inside scroll canvas)
+        self._cart_frame = tk.Frame(lc, bg=BG)
+        self._cart_win   = lc.create_window((0,0), window=self._cart_frame, anchor="nw")
+        self._cart_frame.bind("<Configure>",
+            lambda e: lc.configure(scrollregion=lc.bbox("all")))
+        self._build_controls(self._cart_frame)
+
+        # JOG panel (built separately, swapped in/out)
+        self._jog_frame = tk.Frame(lc, bg=BG)
+        self._jog_win   = lc.create_window((0,0), window=self._jog_frame, anchor="nw")
+        self._jog_frame.bind("<Configure>",
+            lambda e: lc.configure(scrollregion=lc.bbox("all")))
+
+        self._jog_panel = JointJogPanel(
+            self._jog_frame,
+            get_robot=lambda: self.robot,
+            get_angles=lambda: list(self._cur_ang),
+            set_viz_angles=lambda a, d: self._viz.set_angles(a, duration=d),
+            log_fn=self._log,
+        )
+        self._jog_panel.pack(fill="x")
+
+        self._lc = lc   # keep ref for scrollregion updates
+
+        # Show cartesian tab by default
+        self._show_cartesian()
+
+        # Right: visualizer
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="right", fill="both", expand=True, padx=(5,10), pady=8)
+        self._build_viz_panel(right)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+        lh = tk.Frame(self, bg=PANEL); lh.pack(fill="x")
+        tk.Label(lh, text="SYSTEM LOG", font=(FNT,8),
+                 fg=MUTED, bg=PANEL, pady=3).pack(side="left", padx=12)
+        tk.Button(lh, text="CLEAR", font=(FNT,8), bg=PANEL, fg=MUTED,
+                  relief="flat", cursor="hand2",
+                  command=self._clear_log).pack(side="right", padx=12)
+        self._lbox = scrolledtext.ScrolledText(
+            self, height=5, font=(FNT,9),
+            bg=PANEL, fg=MUTED, relief="flat",
+            state="disabled", wrap="word")
+        self._lbox.pack(fill="x")
+        for t, c in [("ok",GREEN),("warn",YELLOW),("err",RED),("info",DIM)]:
+            self._lbox.tag_config(t, foreground=c)
+
+    # ── Tab switching ─────────────────────────────────────────────────────────
+
+    def _show_cartesian(self):
+        self._lc.itemconfig(self._jog_win,  state="hidden")
+        self._lc.itemconfig(self._cart_win, state="normal")
+        self._lc.configure(scrollregion=self._lc.bbox("all"))
+        self._tab_cart_btn.config(bg=BLUE,  fg=BG)
+        self._tab_jog_btn.config( bg=PANEL, fg=MUTED)
+
+    def _show_jog(self):
+        self._lc.itemconfig(self._cart_win, state="hidden")
+        self._lc.itemconfig(self._jog_win,  state="normal")
+        self._lc.configure(scrollregion=self._lc.bbox("all"))
+        self._tab_jog_btn.config( bg=ACCENT, fg=BG)
+        self._tab_cart_btn.config(bg=PANEL,  fg=MUTED)
+        # Sync jog panel with current arm state
+        self._jog_panel.refresh_from_sim()
+
+    def _build_controls(self, parent):
+        card = tk.Frame(parent, bg=CARD,
+                        highlightbackground=BORDER, highlightthickness=1)
+        card.pack(fill="x", pady=(0,8))
+
+        tk.Label(card, text="TARGET POSITION  (mm from base origin)",
+                 font=(FNT,9,"bold"), fg=ACCENT, bg=CARD
+                 ).pack(anchor="w", padx=12, pady=(10,6))
+
+        xyz_f = tk.Frame(card, bg=CARD); xyz_f.pack(pady=(0,8))
+        
+        # Reachable Defaults!
+        self._xv = tk.StringVar(value="300.0")
+        self._yv = tk.StringVar(value="0.0")
+        self._zv = tk.StringVar(value="400.0")
+
+        for ax, var, col in [("X",self._xv,ACCENT),
+                              ("Y",self._yv,BLUE),
+                              ("Z",self._zv,YELLOW)]:
+            cf = tk.Frame(xyz_f, bg=CARD); cf.pack(side="left", padx=14)
+            tk.Label(cf, text=ax, font=(FNT,20,"bold"),
+                     fg=col, bg=CARD).pack()
+            e = tk.Entry(cf, textvariable=var, width=8,
+                         font=(FNT,11), bg=INPUT, fg=TEXT,
+                         insertbackground=TEXT, relief="flat",
+                         highlightbackground=BORDER, highlightthickness=1)
+            e.pack()
+            e.bind("<Return>", lambda _: self._solve())
+            tk.Label(cf, text="mm", font=(FNT,8), fg=MUTED, bg=CARD).pack()
+
+        tr = tk.Frame(card, bg=CARD); tr.pack(padx=12, pady=(0,10))
+        
+        # Adding constraints label
+        tk.Label(card, text="Max reach is a 460mm sphere centered at X=0, Y=0, Z=100mm",
+                 font=(FNT,8,"italic"), fg=YELLOW, bg=CARD
+                 ).pack(anchor="w", padx=12, pady=(0,10))
+
+        tk.Label(tr, text="Motion time:", font=(FNT,9), fg=MUTED, bg=CARD
+                 ).pack(side="left")
+        self._tv = tk.StringVar(value="3.0")
+        tk.Entry(tr, textvariable=self._tv, width=6,
+                 font=(FNT,10), bg=INPUT, fg=TEXT,
+                 insertbackground=TEXT, relief="flat",
+                 highlightbackground=BORDER, highlightthickness=1
+                 ).pack(side="left", padx=6)
+        tk.Label(tr, text="seconds", font=(FNT,9), fg=MUTED, bg=CARD
+                 ).pack(side="left")
+
+        br = tk.Frame(parent, bg=BG); br.pack(fill="x", pady=(0,6))
+        self._bsolve = self._btn(br,"🔍  SOLVE IK",BLUE, BG,   self._solve)
+        self._bsolve.pack(side="left", padx=(0,5))
+        self._bexec  = self._btn(br,"▶  EXECUTE",  ACCENT,BG,  self._execute,
+                                 state="disabled")
+        self._bexec.pack(side="left", padx=(0,5))
+        self._btn(br,"■  STOP",  RED,   TEXT, self._stop).pack(side="left",padx=(0,5))
+        self._btn(br,"HOME",     PANEL, MUTED,self._home).pack(side="left")
+
+        self._lbl_ik = tk.Label(parent, text="Enter X/Y/Z and press SOLVE IK  ·  then EXECUTE",
+                                font=(FNT,9), fg=MUTED, bg=BG, anchor="w", wraplength=410)
+        self._lbl_ik.pack(fill="x", pady=(0,3))
+
+        self._pv = tk.DoubleVar(value=0)
+        style = ttk.Style()
+        style.configure("C.Horizontal.TProgressbar",
+                        troughcolor=INPUT, background=ACCENT, bordercolor=BORDER)
+        ttk.Progressbar(parent, variable=self._pv, maximum=100,
+                        style="C.Horizontal.TProgressbar"
+                        ).pack(fill="x", pady=(0,8))
+
+        tk.Label(parent, text="IK SOLUTION  —  per motor",
+                 font=(FNT,8,"bold"), fg=MUTED, bg=BG
+                 ).pack(anchor="w", pady=(0,3))
+        self._tbl = IKTable(parent)
+        self._tbl.pack(fill="x")
+
+        # Reachable Presets!
+        pc = tk.Frame(parent, bg=CARD,
+                      highlightbackground=BORDER, highlightthickness=1)
+        pc.pack(fill="x", pady=(10,0))
+        tk.Label(pc, text="QUICK PRESETS",
+                 font=(FNT,8,"bold"), fg=MUTED, bg=CARD
+                 ).pack(anchor="w", padx=10, pady=(7,4))
+        pg = tk.Frame(pc, bg=CARD); pg.pack(padx=10, pady=(0,8))
+        presets = [
+            ("Reach Fwd",  "300", "  0", "300"),
+            ("Reach Left", "  0", "300", "300"),
+            ("Reach Right","  0","-300", "300"),
+            ("High Fwd",   "200", "  0", "400"),
+            ("Low Fwd",    "400", "  0", "150"),
+            ("Diagonal",   "200", "200", "300"),
+        ]
+        for idx, (nm, x, y, z) in enumerate(presets):
+            def _cb(nx=x,ny=y,nz=z):
+                self._xv.set(nx.strip())
+                self._yv.set(ny.strip())
+                self._zv.set(nz.strip())
+                self._solve()
+            tk.Button(pg, text=nm, font=(FNT,8),
+                      bg=INPUT, fg=TEXT, activebackground=BORDER,
+                      relief="flat", cursor="hand2",
+                      padx=8, pady=4, command=_cb
+                      ).grid(row=idx//3, column=idx%3, padx=3, pady=2, sticky="ew")
+        for c in range(3): pg.columnconfigure(c, weight=1)
+
+        # ── CSV Sequence Panel ──
+        cc = tk.Frame(parent, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
+        cc.pack(fill="x", pady=(10,0))
+        tk.Label(cc, text="CARTESIAN CSV SEQUENCE", font=(FNT,8,"bold"), fg=MUTED, bg=CARD).pack(anchor="w", padx=10, pady=(7,4))
+
+        cf = tk.Frame(cc, bg=CARD); cf.pack(fill="x", padx=10, pady=(0,8))
+        self._csv_path = tk.StringVar()
+        tk.Entry(cf, textvariable=self._csv_path, font=(FNT,9), bg=INPUT, fg=TEXT, insertbackground=TEXT, relief="flat", highlightbackground=BORDER, highlightthickness=1).pack(side="left", fill="x", expand=True, padx=(0,5))
+        self._btn(cf,"BROWSE", BLUE, BG, self._browse_csv).pack(side="left", padx=2)
+        self._bcsv_run = self._btn(cf,"RUN", GREEN, BG, self._run_csv, state="disabled")
+        self._bcsv_run.pack(side="left", padx=2)
+
+    def _build_viz_panel(self, parent):
+        hdr = tk.Frame(parent, bg=BG); hdr.pack(fill="x", pady=(0, 4))
+        tk.Label(hdr, text="ARM VISUALIZATION  —  live kinematic display",
+                 font=(FNT, 9, "bold"), fg=DIM, bg=BG
+                 ).pack(side="left")
+        tk.Label(hdr,
+                 text="scroll-wheel or ⊕/⊖ to zoom  ·  drag 3-D to rotate",
+                 font=(FNT, 8), fg=MUTED, bg=BG
+                 ).pack(side="right")
+
+        leg = tk.Frame(parent, bg=PANEL); leg.pack(fill="x", pady=(0,5))
+        for i, nm in enumerate(_JNAMES):
+            f = tk.Frame(leg, bg=PANEL); f.pack(side="left", padx=8, pady=4)
+            tk.Frame(f, bg=JCOLORS[i], width=12, height=12
+                     ).pack(side="left", padx=(0,3))
+            tk.Label(f, text=f"M{i+1} {nm}",
+                     font=(FNT,8), fg=JCOLORS[i], bg=PANEL).pack(side="left")
+        tf = tk.Frame(leg, bg=PANEL); tf.pack(side="right", padx=10, pady=4)
+        tk.Label(tf, text="⊕ TARGET", font=(FNT,8), fg=GREEN, bg=PANEL).pack()
+
+        self._viz = ArmVisualizer(parent)
+        self._viz.pack(fill="both", expand=True)
+
+    @staticmethod
+    def _btn(parent, text, bg, fg, cmd, state="normal"):
+        return tk.Button(parent, text=text, font=(FNT,9,"bold"),
+                         bg=bg, fg=fg, activebackground=bg,
+                         relief="flat", cursor="hand2",
+                         command=cmd, padx=10, pady=5, state=state)
+
+    def _solve(self):
+        try:
+            x = float(self._xv.get()) / 1000.0
+            y = float(self._yv.get()) / 1000.0
+            z = float(self._zv.get()) / 1000.0
+        except ValueError:
+            messagebox.showerror("Input Error", "X, Y, Z must be numbers.")
+            return
+
+        tgt = [x, y, z]
+        self._viz.set_target(tgt)
+        self._bsolve.config(state="disabled", text="SOLVING…")
+        self._lbl_ik.config(text="Running IK solver…", fg=YELLOW)
+        self._log(f"IK solve → X={x*1e3:+.1f}  Y={y*1e3:+.1f}  Z={z*1e3:+.1f} mm")
+        threading.Thread(target=self._solve_bg, args=(tgt,), daemon=True).start()
+
+    def _solve_bg(self, tgt):
+        angles, err, ok = _ik(tgt, start_deg=self._cur_ang)
+        self.after(0, lambda: self._solve_done(tgt, angles, err, ok))
+
+    def _solve_done(self, tgt, angles, err, ok):
+        self._bsolve.config(state="normal", text="🔍  SOLVE IK")
+        if not ok:
+            self._lbl_ik.config(
+                text=f"⚠  IK failed — target may be out of reach  (error: {err*1000:.1f} mm)",
+                fg=RED)
+            self._log(f"IK failed — err={err*1000:.1f}mm", "err")
+            self._bexec.config(state="disabled")
+            return
+
+        self._ik_ang = list(angles)
+        self._ik_err = err
+
+        try:
+            t = max(0.1, float(self._tv.get()))
+        except ValueError:
+            t = 3.0
+
+        speeds = []
+        for i in range(6):
+            d   = abs(angles[i] - self._cur_ang[i])
+            spd = max(1.0, min(d/t if t>0 else _SPEED_LIMITS[i],
+                               _SPEED_LIMITS[i]))
+            speeds.append(spd)
+            self._tbl.update_row(i, self._cur_ang[i], angles[i], spd)
+
+        self._viz.set_angles(angles, duration=1.0, target_xyz=tgt)
+
+        col = GREEN if err < 0.001 else (YELLOW if err < 0.005 else ORANGE)
+        self._lbl_ik.config(
+            text=f"✓ IK solved  —  error: {err*1000:.2f} mm  |  "
+                 f"time: {t:.1f}s  |  max speed: {max(speeds):.0f}°/s",
+            fg=col)
+        self._log("IK OK — " +
+                  "  ".join(f"M{i+1}:{angles[i]:+.1f}°" for i in range(6)))
+        self._bexec.config(state="normal")
+
+    def _execute(self):
+        if self._ik_ang is None or self._executing: return
+
+        robot = self.robot
+        try:
+            t = max(0.1, float(self._tv.get()))
+        except ValueError:
+            t = 3.0
+
+        if not robot:
+            self._executing = True
+            self._bexec.config(state="disabled", text="EXECUTING…")
+            self._pv.set(0)
+            target = list(self._ik_ang)
+            self._viz.set_angles(target, duration=t)
+            self._log(f"[SIM] Animating {t:.1f}s")
+            t0 = time.time()
+            def tick():
+                el = time.time()-t0
+                self._pv.set(min(el/t*100, 100))
+                if el < t: self.after(80, tick)
+            tick()
+            def done():
+                time.sleep(t+0.25)
+                self.after(0, self._exec_done, target)
+            threading.Thread(target=done, daemon=True).start()
+            return
+
+        self._executing = True
+        self._bexec.config(state="disabled", text="EXECUTING…")
+        self._pv.set(0)
+        threading.Thread(target=self._exec_bg,
+                         args=(robot, list(self._ik_ang), t),
+                         daemon=True).start()
+
+    def _exec_bg(self, robot, angles, t):
+        from robot_controller import DEFAULT_JOINT_CONFIG
+        for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+            d   = abs(angles[i] - self._cur_ang[i])
+            spd = max(1.0, min(d/t, _SPEED_LIMITS[i]))
+            robot.motors[cfg.motor_id].set_position(
+                float(angles[i]), max_speed_dps=float(spd), wait=False)
+            time.sleep(0.001)
+        self.after(0, lambda: self._viz.set_angles(angles, duration=t))
+        t0 = time.time()
+        while True:
+            el = time.time()-t0
+            self.after(0, lambda p=min(el/t*100,100): self._pv.set(p))
+            if el >= t+0.5: break
+            time.sleep(0.05)
+        self.after(0, self._exec_done, angles)
+
+    def _exec_done(self, final):
+        self._cur_ang = list(final)
+        self._tbl.set_current(final)
+        self._executing = False
+        self._pv.set(100)
+        self._bexec.config(state="normal", text="▶  EXECUTE")
+        self._lbl_ik.config(text="✓ Motion complete.", fg=GREEN)
+        self._log("Motion complete.")
+
+    def _stop(self):
+        robot = self.robot
+        if robot:
+            threading.Thread(target=robot.stop_all, daemon=True).start()
+        self._executing = False
+        self._pv.set(0)
+        self._viz._cancel_anim()
+        self._bexec.config(
+            state="normal" if self._ik_ang else "disabled",
+            text="▶  EXECUTE")
+        self._log("STOP.")
+
+    def _home(self):
+        self._xv.set("300"); self._yv.set("0"); self._zv.set("300")
+        _home_ang = [0.0, 45.0, 80.0, -35.0, 0.0, 0.0]
+        self._ik_ang  = list(_home_ang)
+        self._cur_ang = list(_home_ang)
+        self._viz.set_angles(_home_ang, duration=1.5)
+        self._viz.clear_target()
+        self._tbl.set_current(_home_ang)
+        for i in range(6): self._tbl.update_row(i, _home_ang[i], _home_ang[i], 0)
+        robot = self.robot
+        if robot:
+            threading.Thread(target=robot.go_home,
+                             kwargs={"speed_dps":60,"wait":False},
+                             daemon=True).start()
+        self._lbl_ik.config(text="Homing…", fg=DIM)
+        self._log("Homing.")
+
+    def _browse_csv(self):
+        from tkinter import filedialog
+        path = filedialog.askopenfilename(filetypes=[("CSV","*.csv")])
+        if path:
+            self._csv_path.set(path)
+            self._bcsv_run.config(state="normal")
+
+    def _run_csv(self):
+        path = self._csv_path.get()
+        import csv
+        try:
+            with open(path, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as e:
+            messagebox.showerror("CSV Error", str(e))
+            return
+        
+        self._executing = True
+        self._bcsv_run.config(state="disabled", text="RUNNING...")
+        self._bexec.config(state="disabled")
+        threading.Thread(target=self._run_csv_bg, args=(rows,), daemon=True).start()
+
+    def _run_csv_bg(self, rows):
+        import math
+        self._log(f"Started CSV Sequence. Steps: {len(rows)}", "ok")
+        for i, r in enumerate(rows):
+            if not self._executing: break
+            step = r.get("step", f"Step {i+1}")
+            try:
+                delay = float(r.get("delay_s", 0))
+                x = float(r.get("x_mm", 0)) / 1000.0
+                y = float(r.get("y_mm", 0)) / 1000.0
+                z = float(r.get("z_mm", 0)) / 1000.0
+                speed = float(r.get("speed_mms", 50))
+            except Exception as e:
+                self._log(f"[{step}] Parse err: {e}", "err")
+                continue
+
+            tgt = [x, y, z]
+            self._log(f"[{step}] X:{x*1000:.0f} Y:{y*1000:.0f} Z:{z*1000:.0f} @{speed}mm/s")
+            angles, err, ok = _ik(tgt, start_deg=self._cur_ang)
+            if not ok:
+                self._log(f"[{step}] IK Failed! err={err*1000:.1f}mm", "err")
+                break
+                
+            _, pts = _fk(self._cur_ang)
+            curr_xyz = pts[-1]
+            dist_mm = math.dist(curr_xyz, tgt) * 1000.0
+            t = dist_mm / speed if speed > 0 else 2.0
+            if t < 0.1: t = 0.5
+            
+            robot = self.robot
+            if robot:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                for j, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    d = abs(angles[j] - self._cur_ang[j])
+                    spd = max(1.0, min(d/t, _SPEED_LIMITS[j]))
+                    robot.motors[cfg.motor_id].set_position(
+                        float(angles[j]), max_speed_dps=float(spd), wait=False)
+                    time.sleep(0.001)
+
+            self.after(0, lambda a=angles, tc=t, tg=tgt: self._viz.set_angles(a, duration=tc, target_xyz=tg))
+            
+            el = 0.0
+            while el < t + 0.1:
+                if not self._executing: break
+                time.sleep(0.1)
+                el += 0.1
+                
+            self._cur_ang = list(angles)
+            self.after(0, lambda a=angles: self._tbl.set_current(a))
+            
+            if delay > 0 and self._executing:
+                self._log(f"[{step}] Delay {delay}s")
+                el = 0.0
+                while el < delay:
+                    if not self._executing: break
+                    time.sleep(0.1)
+                    el += 0.1
+
+        self._log("CSV Sequence Complete.", "ok")
+        self._executing = False
+        self.after(0, lambda: self._bcsv_run.config(state="normal", text="RUN"))
+        self.after(0, lambda: self._bexec.config(state="normal" if self._ik_ang else "disabled"))
+
+    # ── Connection ─────────────────────────────────────────────────────────────
+
+    def _connect(self):
+        if not HAS_ROBOT:
+            self._lbl_c.config(text="● VISUAL SIM", fg=YELLOW)
+            self._log("Robot modules not available — visual simulation only.", "warn")
+            return
+        threading.Thread(target=self._connect_bg, daemon=True).start()
+
+    def _connect_bg(self):
+        try:
+            self.bus   = CANBus(simulated=self._sim, channel=self._port,
+                                bustype=self._bus_t, num_motors=6)
+            self.robot = RobotController(self.bus, DEFAULT_JOINT_CONFIG)
+            self.robot.start()
+            self._connected = True
+            self.after(0, self._conn_ok)
+        except Exception as e:
+            self.after(0, lambda: self._conn_fail(str(e)))
+
+    def _conn_ok(self):
+        self._lbl_c.config(text="● CONNECTED", fg=ACCENT)
+        self._log("Connected — all 6 motors enabled.", "ok")
+        self._start_monitor()
+
+    def _conn_fail(self, err):
+        self._lbl_c.config(text="● CONN FAILED", fg=RED)
+        self._log(f"Connection failed: {err}", "err")
+        messagebox.showerror("Connection Failed", err)
+
+    def _disconnect(self):
+        self._stop_monitor()
+        if self.robot:
+            try: self.robot.close()
+            except: pass
+            self.robot = None
+        self.bus = None
+        self._connected = False
+        self._lbl_c.config(text="● DISCONNECTED", fg=RED)
+        self._log("Disconnected.")
+
+    # ── Monitor (Thread-Safe Fix) ──────────────────────────────────────────────
+
+    def _start_monitor(self):
+        self._mon_job = self.after(300, self._monitor)
+
+    def _stop_monitor(self):
+        if self._mon_job:
+            self.after_cancel(self._mon_job)
+            self._mon_job = None
+
+    def _monitor(self):
+        if self.robot and self._connected:
+            try:
+                from robot_controller import DEFAULT_JOINT_CONFIG
+                fb_all = self.robot.get_all_feedback()
+                a = []
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    fb = fb_all.get(cfg.motor_id)
+                    a.append(fb.position_deg if fb else self._cur_ang[i])
+
+                self._cur_ang = list(a)
+                if not self._executing:
+                    self._viz.set_angles(a)
+                self._tbl.set_current(a)
+
+                # Feed jog panel live data
+                for i, cfg in enumerate(DEFAULT_JOINT_CONFIG):
+                    fb = fb_all.get(cfg.motor_id)
+                    if fb:
+                        self._jog_panel.update_feedback(
+                            cfg.motor_id,
+                            fb.position_deg,
+                            fb.velocity_dps,
+                            fb.current_a)
+                    # Sync jog panel cur_ang even without FB
+                    self._jog_panel._cur_ang[i] = self._cur_ang[i]
+
+            except Exception:
+                pass
+        else:
+            # Simulation: push current angles to jog panel
+            for i, a in enumerate(self._cur_ang):
+                self._jog_panel._cur_ang[i] = a
+                self._jog_panel.update_feedback(i + 1, a, 0.0, 0.0)
+
+        self._mon_job = self.after(300, self._monitor)
+
+    # ── Log ────────────────────────────────────────────────────────────────────
+
+    def _log(self, msg, tag="info"):
+        ts = time.strftime("%H:%M:%S")
+        self._lbox.config(state="normal")
+        self._lbox.insert("end", f"{ts}  {msg}\n", tag)
+        self._lbox.see("end")
+        self._lbox.config(state="disabled")
+
+    def _poll_log(self):
+        while not _lq.empty():
+            m = _lq.get_nowait()
+            t = "warn" if "WARNING" in m else ("err" if "ERROR" in m else "info")
+            self._log(m, t)
+        self.after(150, self._poll_log)
+
+    def _clear_log(self):
+        self._lbox.config(state="normal")
+        self._lbox.delete("1.0","end")
+        self._lbox.config(state="disabled")
+
+    # ── Close ──────────────────────────────────────────────────────────────────
+
+    def _close(self):
+        self._stop_monitor()
+        if self.robot:
+            try: self.robot.close()
+            except: pass
+        self.destroy()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser(description="6-Axis Cartesian + Visualizer")
+    ap.add_argument("--real",    action="store_true")
+    ap.add_argument("--port",    default="COM3")
+    ap.add_argument("--bustype", default="slcan")
+    args = ap.parse_args()
+    CartesianGUI(simulated=not args.real,
+                 port=args.port, bustype=args.bustype).mainloop()
