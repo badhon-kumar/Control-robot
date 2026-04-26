@@ -241,21 +241,21 @@ def compute_pcc_kinematics(disps_mm: List[float]) -> dict:
 # THEME — industrial dark with precise accent colours
 # ══════════════════════════════════════════════════════════════════════════════
 
-BG       = "#070b10"
-PANEL    = "#0c1219"
-CARD     = "#101820"
-INPUT    = "#141f2a"
-BORDER   = "#1a2d3e"
-ACCENT   = "#00ddb8"
-BLUE     = "#3a9ef0"
-RED      = "#e84040"
-YELLOW   = "#f0c030"
-GREEN    = "#30c050"
-ORANGE   = "#f5a623"
-MUTED    = "#3d5a70"
-TEXT     = "#bdd4e8"
-DIM      = "#567080"
-CBKG     = "#050a0f"
+BG       = "#e2e8f0"
+PANEL    = "#cbd5e1"
+CARD     = "#f1f5f9"
+INPUT    = "#f8fafc"
+BORDER   = "#94a3b8"
+ACCENT   = "#0f766e"
+BLUE     = "#2563eb"
+RED      = "#dc2626"
+YELLOW   = "#d97706"
+GREEN    = "#16a34a"
+ORANGE   = "#ea580c"
+MUTED    = "#475569"
+TEXT     = "#0f172a"
+DIM      = "#64748b"
+CBKG     = "#e2e8f0"
 FNT      = "Courier New"
 FNT_H    = "Courier New"   # heading font
 
@@ -363,10 +363,10 @@ class CapstanPanel(tk.Frame):
     def _build(self):
         hf = tk.Frame(self, bg=BG)
         hf.pack(fill="x", pady=(8, 4))
-        tk.Label(hf, text="CAPSTAN DRUMS", font=(FNT_H, 10, "bold"),
+        tk.Label(hf, text="CAPSTAN DRUMS", font=(FNT_H, 12, "bold"),
                  fg=ACCENT, bg=BG).pack(side="left")
         tk.Label(hf, text="  ·  live tendon displacement per motor",
-                 font=(FNT, 8), fg=MUTED, bg=BG).pack(side="left")
+                 font=(FNT, 10), fg=MUTED, bg=BG).pack(side="left")
 
         # Segment group labels above
         grp = tk.Frame(self, bg=BG)
@@ -375,7 +375,7 @@ class CapstanPanel(tk.Frame):
             g = tk.Frame(grp, bg=BG)
             g.pack(side="left", expand=True, fill="x")
             tk.Frame(g, bg=sc, height=2).pack(fill="x")
-            tk.Label(g, text=f"── {sn} ──", font=(FNT, 8, "bold"),
+            tk.Label(g, text=f"── {sn} ──", font=(FNT, 10, "bold"),
                      fg=sc, bg=BG).pack(pady=2)
 
         grid = tk.Frame(self, bg=BG)
@@ -395,20 +395,20 @@ class CapstanPanel(tk.Frame):
 
             tk.Frame(cell, bg=sc, height=3).pack(fill="x")
             role = "PULL +" if MOTOR_IS_POS[i] else "REL −"
-            tk.Label(cell, text=f"M{i+1}", font=(FNT, 12, "bold"),
+            tk.Label(cell, text=f"M{i+1}", font=(FNT, 14, "bold"),
                      fg=col, bg=CARD).pack(pady=(5, 0))
-            tk.Label(cell, text=role, font=(FNT, 7), fg=DIM, bg=CARD).pack()
+            tk.Label(cell, text=role, font=(FNT, 9), fg=DIM, bg=CARD).pack()
 
             cv = tk.Canvas(cell, width=100, height=66, bg=CARD, highlightthickness=0)
             cv.pack(padx=4, pady=3)
             self._canvases.append(cv)
 
-            dl = tk.Label(cell, text="  0.0", font=(FNT, 11, "bold"),
+            dl = tk.Label(cell, text="  0.0", font=(FNT, 13, "bold"),
                           fg=col, bg=CARD, anchor="center")
             dl.pack()
             self._disp_lbls.append(dl)
 
-            vl = tk.Label(cell, text="0 mm/s", font=(FNT, 7),
+            vl = tk.Label(cell, text="0 mm/s", font=(FNT, 9),
                           fg=MUTED, bg=CARD)
             vl.pack(pady=(0, 5))
             self._speed_lbls.append(vl)
@@ -430,18 +430,18 @@ class CapstanPanel(tk.Frame):
         ratio = max(0.0, min(1.0, ratio))
         bar_w = int(w * ratio)
         cv.create_rectangle(0, h - 14, w, h, fill=INPUT, outline="")
-        bar_col = col if d >= 0 else "#1a4a7a"
+        bar_col = col if d >= 0 else "#d1d5db"
         if bar_w > 0:
             cv.create_rectangle(0, h - 14, bar_w, h, fill=bar_col, outline="")
         cv.create_line(w // 2, h - 14, w // 2, h, fill=BORDER, dash=(2, 2))
         cv.create_text(w // 2, h - 6, text=f"{d:+.1f}mm",
-                       fill=TEXT, font=(FNT, 7), anchor="center")
+                       fill=TEXT, font=(FNT, 9), anchor="center")
 
         # Drum circle
         dr = self.DRUM_R
         cx_, cy_ = w // 2, 28
         cv.create_oval(cx_ - dr, cy_ - dr, cx_ + dr, cy_ + dr,
-                       fill="#0a1520", outline=col, width=2)
+                       fill="#f3f4f6", outline=col, width=2)
 
         # Rotation indicator
         ang  = math.radians(d / CAPSTAN_RADII_MM[i] * (180 / math.pi) % 360)
@@ -529,12 +529,12 @@ class ContinuumVisualizer(tk.Frame):
         # Header
         hf = tk.Frame(self, bg=BG)
         hf.pack(fill="x", pady=(4, 2))
-        tk.Label(hf, text="CONTINUUM SHAPE", font=(FNT_H, 10, "bold"),
+        tk.Label(hf, text="CONTINUUM SHAPE", font=(FNT_H, 12, "bold"),
                  fg=BLUE, bg=BG).pack(side="left")
         tk.Label(hf, text="  ·  piecewise constant curvature  ·  3 segments  ·  mm",
-                 font=(FNT, 8), fg=MUTED, bg=BG).pack(side="left")
+                 font=(FNT, 10), fg=MUTED, bg=BG).pack(side="left")
         tk.Label(hf, text="scroll top-view to zoom",
-                 font=(FNT, 7), fg=DIM, bg=BG).pack(side="right")
+                 font=(FNT, 9), fg=DIM, bg=BG).pack(side="right")
 
         # Three canvases row
         views = tk.Frame(self, bg=BG)
@@ -544,7 +544,7 @@ class ContinuumVisualizer(tk.Frame):
         sc = tk.Frame(views, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         sc.pack(side="left", fill="both", expand=True, padx=(0, 3))
         tk.Label(sc, text=" SIDE VIEW  (bending plane  x–y)",
-                 font=(FNT, 7, "bold"), fg=BLUE, bg=PANEL).pack(fill="x")
+                 font=(FNT, 9, "bold"), fg=BLUE, bg=PANEL).pack(fill="x")
         self._cv_side = tk.Canvas(sc, bg=CBKG, highlightthickness=0)
         self._cv_side.pack(fill="both", expand=True)
         self._cv_side.bind("<Configure>", lambda e: self._draw_side())
@@ -553,7 +553,7 @@ class ContinuumVisualizer(tk.Frame):
         tc = tk.Frame(views, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         tc.pack(side="left", fill="both", expand=True, padx=(3, 3))
         tk.Label(tc, text=" TOP VIEW  (base plate + tendon routing)",
-                 font=(FNT, 7, "bold"), fg=ORANGE, bg=PANEL).pack(fill="x")
+                 font=(FNT, 9, "bold"), fg=ORANGE, bg=PANEL).pack(fill="x")
         self._cv_top = tk.Canvas(tc, bg=CBKG, highlightthickness=0)
         self._cv_top.pack(fill="both", expand=True)
         self._cv_top.bind("<Configure>", lambda e: self._draw_top())
@@ -564,7 +564,7 @@ class ContinuumVisualizer(tk.Frame):
                       width=158)
         pc.pack(side="left", fill="y", padx=(3, 0))
         pc.pack_propagate(False)
-        tk.Label(pc, text=" END-EFFECTOR", font=(FNT, 7, "bold"),
+        tk.Label(pc, text=" END-EFFECTOR", font=(FNT, 9, "bold"),
                  fg=ORANGE, bg=PANEL).pack(fill="x")
 
         pose_entries = [
@@ -579,12 +579,12 @@ class ContinuumVisualizer(tk.Frame):
         for key, label, unit, col in pose_entries:
             pf = tk.Frame(pc, bg=CARD)
             pf.pack(fill="x", padx=6, pady=3)
-            tk.Label(pf, text=label, font=(FNT, 8), fg=MUTED,
+            tk.Label(pf, text=label, font=(FNT, 10), fg=MUTED,
                      bg=CARD, anchor="w", width=3).pack(side="left")
-            lv = tk.Label(pf, text="---", font=(FNT, 11, "bold"),
+            lv = tk.Label(pf, text="---", font=(FNT, 13, "bold"),
                           fg=col, bg=CARD, anchor="e", width=7)
             lv.pack(side="right")
-            tk.Label(pf, text=unit, font=(FNT, 7), fg=DIM, bg=CARD).pack(side="right")
+            tk.Label(pf, text=unit, font=(FNT, 9), fg=DIM, bg=CARD).pack(side="right")
             self._pose_widgets[key] = lv
             tk.Frame(pc, bg=BORDER, height=1).pack(fill="x", padx=4)
 
@@ -592,7 +592,7 @@ class ContinuumVisualizer(tk.Frame):
         hc = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         hc.pack(fill="x", pady=(3, 0))
         tk.Label(hc, text=" MOTOR LOAD HEATMAP  (blue=release  ·  red=pull  ·  width ∝ |displacement|)",
-                 font=(FNT, 7, "bold"), fg=MUTED, bg=PANEL).pack(fill="x")
+                 font=(FNT, 9, "bold"), fg=MUTED, bg=PANEL).pack(fill="x")
         self._cv_heat = tk.Canvas(hc, height=52, bg=CBKG, highlightthickness=0)
         self._cv_heat.pack(fill="x")
         self._cv_heat.bind("<Configure>", lambda e: self._draw_heat())
@@ -620,9 +620,9 @@ class ContinuumVisualizer(tk.Frame):
     @staticmethod
     def _grid(cv, w, h, step=38):
         for x in range(0, w, step):
-            cv.create_line(x, 0, x, h, fill="#080e14", width=1)
+            cv.create_line(x, 0, x, h, fill="#e2e8f0", width=1)
         for y in range(0, h, step):
-            cv.create_line(0, y, w, y, fill="#080e14", width=1)
+            cv.create_line(0, y, w, y, fill="#e2e8f0", width=1)
 
     # ── SIDE VIEW ─────────────────────────────────────────────────────────────
 
@@ -666,27 +666,27 @@ class ContinuumVisualizer(tk.Frame):
             cv.create_line(ruler_x - 4, ry, ruler_x + 4, ry, fill=MUTED, width=1)
             if mm % 90 == 0:
                 cv.create_text(ruler_x - 6, ry, text=f"{mm}", fill=DIM,
-                               font=(FNT, 6), anchor="e")
+                               font=(FNT, 8), anchor="e")
         cv.create_text(ruler_x, org_y - TOTAL_LENGTH_MM * scl - 8,
-                       text="mm", fill=DIM, font=(FNT, 6), anchor="s")
+                       text="mm", fill=DIM, font=(FNT, 8), anchor="s")
         cv.create_line(org_x, org_y, org_x, 6, fill=BORDER, dash=(4, 6), width=1)
 
         # ── Base platform ─────────────────────────────────────────────────────
         bw = 26
         cv.create_rectangle(org_x - bw, org_y - 5, org_x + bw, org_y + 9,
-                            fill="#162030", outline=TEXT, width=1)
+                            fill="#e5e7eb", outline=TEXT, width=1)
         for k in range(-bw, bw, 8):
             cv.create_line(org_x + k, org_y + 9, org_x + k - 6, org_y + 16,
                            fill=MUTED, width=1)
         cv.create_text(org_x, org_y + 18, text="BASE",
-                       fill=MUTED, font=(FNT, 7), anchor="n")
+                       fill=MUTED, font=(FNT, 9), anchor="n")
 
         # ── LAYER 1: outer shadow tube ─────────────────────────────────────────
         for k in range(1, N):
             x0c, y0c = px(*all_pts[k - 1])
             x1c, y1c = px(*all_pts[k])
             cv.create_line(x0c, y0c, x1c, y1c,
-                           fill="#040b12", width=28,
+                           fill="#d1d5db", width=28,
                            capstyle=tk.ROUND)
 
         # ── LAYER 2: coloured flexible body, tapers toward tip ─────────────────
@@ -714,8 +714,8 @@ class ContinuumVisualizer(tk.Frame):
                 all_pts[k][0] - ep[0], all_pts[k][1] - ep[1]))
             anchor_positions.add(best)
 
-        disk_col_fill = "#152030"
-        disk_col_edge = "#223344"
+        disk_col_fill = "#f3f4f6"
+        disk_col_edge = "#9ca3af"
 
         for di in range(TOTAL_DISKS + 1):
             t     = di / TOTAL_DISKS
@@ -757,7 +757,7 @@ class ContinuumVisualizer(tk.Frame):
             # Centre rotating pin dot
             pr = 2 if is_anchor else 1
             cv.create_oval(cx_d - pr, cy_d - pr, cx_d + pr, cy_d + pr,
-                           fill=seg_col if is_anchor else "#3a6080", outline="")
+                           fill=seg_col if is_anchor else "#6b7280", outline="")
 
         # ── LAYER 4: tendons running INSIDE the body ───────────────────────────
         # Physical offsets: outermost (M1/M2) → middle (M3/M4) → inner (M5/M6)
@@ -812,7 +812,7 @@ class ContinuumVisualizer(tk.Frame):
                       (self.BODY_RADII[2] - self.BODY_RADII[0]))
             cv.create_text(epx + br + 10, epy,
                            text=f"End Disk {s_idx+1}  ·  T{s_idx*2+1}/T{s_idx*2+2} anchor",
-                           fill=seg_col, font=(FNT, 7), anchor="w")
+                           fill=seg_col, font=(FNT, 9), anchor="w")
 
         # ── LAYER 6: curvature annotation per zone ────────────────────────────
         zone_starts = [0, int(round(SEG_LENGTHS_MM[0] / TOTAL_LENGTH_MM * (N-1))),
@@ -829,7 +829,7 @@ class ContinuumVisualizer(tk.Frame):
                           style="arc", outline=SEG_COLORS[s_idx], width=1)
             cv.create_text(spx - arc_r - 4, spy,
                            text=f"θ{s_idx+1}={math.degrees(th):.0f}°",
-                           fill=SEG_COLORS[s_idx], font=(FNT, 6), anchor="e")
+                           fill=SEG_COLORS[s_idx], font=(FNT, 8), anchor="e")
 
         # ── LAYER 7: end-effector ─────────────────────────────────────────────
         tip_px, tip_py = px(kin["tip_x"], kin["tip_y"])
@@ -841,7 +841,7 @@ class ContinuumVisualizer(tk.Frame):
         cv.create_oval(tip_px - 9, tip_py - 9, tip_px + 9, tip_py + 9,
                        fill=ORANGE, outline=TEXT, width=2)
         cv.create_text(tip_px + 14, tip_py - 1,
-                       text="EE", fill=ORANGE, font=(FNT, 8, "bold"), anchor="w")
+                       text="EE", fill=ORANGE, font=(FNT, 10, "bold"), anchor="w")
 
         psi = kin["psi"]
         al  = 34
@@ -851,7 +851,7 @@ class ContinuumVisualizer(tk.Frame):
                        fill=YELLOW, width=2, arrow=tk.LAST, arrowshape=(8, 10, 3))
         cv.create_text(ax_ + 5, ay_,
                        text=f"ψ={math.degrees(psi):.1f}°",
-                       fill=YELLOW, font=(FNT, 7), anchor="w")
+                       fill=YELLOW, font=(FNT, 9), anchor="w")
 
         # Legend
         legend_y = h - 18
@@ -860,12 +860,12 @@ class ContinuumVisualizer(tk.Frame):
             col = MOTOR_COLORS[ti]
             cv.create_line(lx, legend_y, lx + 22, legend_y, fill=col, width=2)
             cv.create_text(lx + 11, legend_y - 7, text=f"M{ti+1}",
-                           fill=col, font=(FNT, 6), anchor="s")
+                           fill=col, font=(FNT, 8), anchor="s")
 
         cv.create_text(w // 2, h - 5,
                        text=f"EE  x={kin['tip_x']:+.1f}mm  y={kin['tip_y']:.1f}mm  "
                             f"ψ={math.degrees(psi):+.1f}°",
-                       fill=DIM, font=(FNT, 7), anchor="s")
+                       fill=DIM, font=(FNT, 9), anchor="s")
 
 
     # ── TOP VIEW ──────────────────────────────────────────────────────────────
@@ -896,19 +896,19 @@ class ContinuumVisualizer(tk.Frame):
         for k in range(6):
             a = math.radians(30 + k * 60)
             hex_pts += [cx_ + plate_r * math.cos(a), cy_ + plate_r * math.sin(a)]
-        cv.create_polygon(*hex_pts, fill="#0d1825", outline=MUTED, width=1)
+        cv.create_polygon(*hex_pts, fill="#e5e7eb", outline=MUTED, width=1)
         cv.create_line(cx_ - plate_r, cy_, cx_ + plate_r, cy_,
                        fill=BORDER, dash=(2, 4), width=1)
         cv.create_line(cx_, cy_ - plate_r, cx_, cy_ + plate_r,
                        fill=BORDER, dash=(2, 4), width=1)
         cv.create_text(cx_, cy_ + plate_r + 10, text="BASE PLATE",
-                       fill=MUTED, font=(FNT, 6), anchor="n")
+                       fill=MUTED, font=(FNT, 8), anchor="n")
 
         # ── Continuous body arc (shadow + coloured, no segment gaps) ──────────
         for k in range(1, N):
             x0, y0 = px(*all_pts[k - 1])
             x1, y1 = px(*all_pts[k])
-            cv.create_line(x0, y0, x1, y1, fill="#0a1620",
+            cv.create_line(x0, y0, x1, y1, fill="#d1d5db",
                            width=12, capstyle=tk.ROUND)
 
         for k in range(1, N):
@@ -933,7 +933,7 @@ class ContinuumVisualizer(tk.Frame):
             cv.create_oval(epx_ - dr_, epy_ - dr_, epx_ + dr_, epy_ + dr_,
                            fill=CARD, outline=seg_col, width=2)
             cv.create_text(epx_, epy_ - dr_ - 5, text=f"D{s_idx+1}",
-                           fill=seg_col, font=(FNT, 6), anchor="s")
+                           fill=seg_col, font=(FNT, 8), anchor="s")
 
         # ── Tendons: from base plate → through body → anchor at end-disk ──────
         tendon_r = max(12, int(plate_r * 0.55))
@@ -975,14 +975,14 @@ class ContinuumVisualizer(tk.Frame):
             lx_ = cx_ + (tendon_r + 13) * math.cos(ta)
             ly_ = cy_ + (tendon_r + 13) * math.sin(ta)
             cv.create_text(lx_, ly_, text=f"M{i+1}",
-                           fill=col, font=(FNT, 6, "bold"))
+                           fill=col, font=(FNT, 8, "bold"))
 
         # ── Tip ───────────────────────────────────────────────────────────────
         tip_px, tip_py = px(kin["tip_x"], kin["tip_y"])
         cv.create_oval(tip_px - 9, tip_py - 9, tip_px + 9, tip_py + 9,
                        fill=ORANGE, outline=TEXT, width=2)
         cv.create_text(tip_px + 13, tip_py,
-                       text="EE", fill=ORANGE, font=(FNT, 8, "bold"), anchor="w")
+                       text="EE", fill=ORANGE, font=(FNT, 10, "bold"), anchor="w")
         cv.create_line(tip_px - 14, tip_py, tip_px + 14, tip_py,
                        fill=ORANGE, dash=(3, 3))
         cv.create_line(tip_px, tip_py - 14, tip_px, tip_py + 14,
@@ -998,7 +998,7 @@ class ContinuumVisualizer(tk.Frame):
         cv.create_text(w // 2, h - 5,
                        text=f"tip  x={kin['tip_x']:+.1f}  y={kin['tip_y']:.1f}mm  "
                             f"zoom×{self._top_zoom:.1f}",
-                       fill=DIM, font=(FNT, 7), anchor="s")
+                       fill=DIM, font=(FNT, 9), anchor="s")
 
     # ── HEATMAP  (per-motor, 6 bars) ─────────────────────────────────────────
 
@@ -1042,16 +1042,16 @@ class ContinuumVisualizer(tk.Frame):
 
             # Motor label
             cv.create_text((x0 + x1) // 2, 11,
-                           text=f"M{i+1}", fill=col, font=(FNT, 7, "bold"))
+                           text=f"M{i+1}", fill=col, font=(FNT, 9, "bold"))
 
             # Displacement value
             cv.create_text((x0 + x1) // 2, 27,
-                           text=f"{d:+.1f}mm", fill=TEXT, font=(FNT, 9, "bold"))
+                           text=f"{d:+.1f}mm", fill=TEXT, font=(FNT, 11, "bold"))
 
             # Role label
             role = "PULL" if MOTOR_IS_POS[i] else "REL"
             cv.create_text((x0 + x1) // 2, 43,
-                           text=role, fill=DIM, font=(FNT, 6))
+                           text=role, fill=DIM, font=(FNT, 8))
 
     # ── POSE HUD update ───────────────────────────────────────────────────────
 
@@ -1090,14 +1090,14 @@ class ManualJogPanel(tk.Frame):
         # Top toolbar
         tb = tk.Frame(self, bg=PANEL)
         tb.pack(fill="x")
-        tk.Label(tb, text="MANUAL JOG", font=(FNT_H, 10, "bold"),
+        tk.Label(tb, text="MANUAL JOG", font=(FNT_H, 12, "bold"),
                  fg=ACCENT, bg=PANEL).pack(side="left", padx=14, pady=10)
 
-        tk.Label(tb, text="STEP:", font=(FNT, 9), fg=MUTED, bg=PANEL
+        tk.Label(tb, text="STEP:", font=(FNT, 11), fg=MUTED, bg=PANEL
                  ).pack(side="left", padx=(14, 4))
         for s in ["0.1", "0.5", "1", "2", "5"]:
             tk.Radiobutton(tb, text=f"{s}mm", variable=self._step_var, value=s,
-                           font=(FNT, 9, "bold"), bg=PANEL, fg=TEXT,
+                           font=(FNT, 11, "bold"), bg=PANEL, fg=TEXT,
                            selectcolor=INPUT, activebackground=PANEL,
                            indicatoron=False, relief="flat", cursor="hand2",
                            padx=7, pady=3).pack(side="left", padx=2)
@@ -1107,7 +1107,7 @@ class ManualJogPanel(tk.Frame):
             ("STOP ALL", YELLOW, BG, self._stop_all),
             ("ZERO ALL", MUTED, TEXT, self._zero_all),
         ]:
-            tk.Button(tb, text=txt, font=(FNT, 9, "bold"),
+            tk.Button(tb, text=txt, font=(FNT, 11, "bold"),
                       bg=c, fg=fg2, relief="flat", cursor="hand2",
                       padx=8, pady=4, command=cmd).pack(side="right", padx=3)
 
@@ -1118,7 +1118,7 @@ class ManualJogPanel(tk.Frame):
                  ("Live mm", 9), ("  Jog", 10), ("Step", 9),
                  ("Target mm", 10), ("Speed mm/s", 11)]
         for t, w in specs:
-            tk.Label(hdr, text=t, font=(FNT, 8, "bold"), fg=MUTED, bg=PANEL,
+            tk.Label(hdr, text=t, font=(FNT, 10, "bold"), fg=MUTED, bg=PANEL,
                      width=w, anchor="w").pack(side="left", padx=2, pady=3)
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
@@ -1129,7 +1129,7 @@ class ManualJogPanel(tk.Frame):
             sf.pack(fill="x")
             tk.Frame(sf, bg=sc_, width=4).pack(side="left", fill="y")
             tk.Label(sf, text=f"  ─── {SEG_NAMES[seg]} (θ{seg+1})  ───",
-                     font=(FNT, 8, "bold"), fg=sc_, bg=BG).pack(
+                     font=(FNT, 10, "bold"), fg=sc_, bg=BG).pack(
                      side="left", padx=6, pady=2)
             for j in range(2):
                 i = seg * 2 + j
@@ -1144,8 +1144,8 @@ class ManualJogPanel(tk.Frame):
         # Colour stripe
         tk.Frame(row, bg=col, width=4).pack(side="left", fill="y")
         tk.Label(row, text=f"M{i+1}\n{'PUL' if MOTOR_IS_POS[i] else 'REL'}",
-                 font=(FNT, 7, "bold"), fg=col, bg=bg, width=5).pack(side="left", padx=3)
-        tk.Label(row, text=MOTOR_NAMES[i], font=(FNT, 7), fg=MUTED,
+                 font=(FNT, 9, "bold"), fg=col, bg=bg, width=5).pack(side="left", padx=3)
+        tk.Label(row, text=MOTOR_NAMES[i], font=(FNT, 9), fg=MUTED,
                  bg=bg, width=16).pack(side="left", padx=2)
 
         # Displacement bar
@@ -1154,22 +1154,22 @@ class ManualJogPanel(tk.Frame):
         c.create_rectangle(2, 9, 153, 19, fill=INPUT, outline="")
         c.create_line(77, 5, 77, 23, fill=BORDER, width=1)
         bar_fill = c.create_rectangle(77, 9, 77, 19, fill=col, outline="")
-        bar_lbl  = c.create_text(77, 14, text="0.0", fill=TEXT, font=(FNT, 7))
+        bar_lbl  = c.create_text(77, 14, text="0.0", fill=TEXT, font=(FNT, 9))
         self._bar_canvases.append(c)
         self._bar_fills.append(bar_fill)
         self._bar_lbls.append(bar_lbl)
 
         # Live label
-        ll = tk.Label(row, text="  0.0", font=(FNT, 11, "bold"),
+        ll = tk.Label(row, text="  0.0", font=(FNT, 13, "bold"),
                       fg=col, bg=bg, width=7)
         ll.pack(side="left", padx=4)
         self._live_lbls.append(ll)
 
         # Jog buttons (hold to jog)
-        b_neg = tk.Button(row, text=" − ", font=(FNT, 12, "bold"),
+        b_neg = tk.Button(row, text=" − ", font=(FNT, 14, "bold"),
                           bg=INPUT, fg=col, relief="flat", cursor="hand2",
                           padx=8, pady=2)
-        b_pos = tk.Button(row, text=" + ", font=(FNT, 12, "bold"),
+        b_pos = tk.Button(row, text=" + ", font=(FNT, 14, "bold"),
                           bg=INPUT, fg=col, relief="flat", cursor="hand2",
                           padx=8, pady=2)
         b_neg.pack(side="left", padx=1)
@@ -1180,12 +1180,12 @@ class ManualJogPanel(tk.Frame):
         b_pos.bind("<ButtonRelease-1>", lambda e, idx=i: self._jog_stop(idx))
 
         # Step buttons
-        tk.Button(row, text="−S", font=(FNT, 8, "bold"),
+        tk.Button(row, text="−S", font=(FNT, 10, "bold"),
                   bg=INPUT, fg=DIM, relief="flat", cursor="hand2",
                   padx=5, pady=1,
                   command=lambda idx=i: self._step_jog(idx, -1)
                   ).pack(side="left", padx=1)
-        tk.Button(row, text="+S", font=(FNT, 8, "bold"),
+        tk.Button(row, text="+S", font=(FNT, 10, "bold"),
                   bg=INPUT, fg=DIM, relief="flat", cursor="hand2",
                   padx=5, pady=1,
                   command=lambda idx=i: self._step_jog(idx, +1)
@@ -1193,20 +1193,20 @@ class ManualJogPanel(tk.Frame):
 
         # Target entry
         e = tk.Entry(row, textvariable=self._disp_vars[i], width=8,
-                     font=(FNT, 10), bg=INPUT, fg=TEXT,
+                     font=(FNT, 12), bg=INPUT, fg=TEXT,
                      insertbackground=TEXT, relief="flat",
                      highlightbackground=BORDER, highlightthickness=1)
         e.pack(side="left", padx=5)
         e.bind("<Return>",   lambda ev, idx=i: self._send(idx))
         e.bind("<KP_Enter>", lambda ev, idx=i: self._send(idx))
-        tk.Button(row, text="SEND", font=(FNT, 8, "bold"),
+        tk.Button(row, text="SEND", font=(FNT, 10, "bold"),
                   bg=ACCENT, fg=BG, relief="flat", cursor="hand2",
                   padx=6, pady=2,
                   command=lambda idx=i: self._send(idx)).pack(side="left", padx=2)
 
         # Speed entry
         tk.Entry(row, textvariable=self._speed_vars[i], width=7,
-                 font=(FNT, 10), bg=INPUT, fg=TEXT,
+                 font=(FNT, 12), bg=INPUT, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1
                  ).pack(side="left", padx=4)
@@ -1280,7 +1280,7 @@ class ManualJogPanel(tk.Frame):
         c.coords(self._bar_fills[i],
                  min(centre, fill_x), 9, max(centre, fill_x), 19)
         c.itemconfig(self._bar_fills[i],
-                     fill=col if disp >= 0 else "#1a4a7a")
+                     fill=col if disp >= 0 else "#d1d5db")
         c.itemconfig(self._bar_lbls[i], text=f"{disp:+.1f}")
         self._live_lbls[i].config(text=f"{disp:+.1f}")
         self._disp_vars[i].set(f"{disp:.2f}")
@@ -1328,11 +1328,11 @@ class CsvStatePanel(tk.Frame):
         fc = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         fc.pack(fill="x", pady=(0, 4))
 
-        tk.Label(fc, text="CSV STATE FILE", font=(FNT_H, 10, "bold"),
+        tk.Label(fc, text="CSV STATE FILE", font=(FNT_H, 12, "bold"),
                  fg=ACCENT, bg=CARD).pack(side="left", padx=10, pady=8)
 
         tk.Entry(fc, textvariable=self._filepath,
-                 font=(FNT, 10), bg=INPUT, fg=TEXT,
+                 font=(FNT, 12), bg=INPUT, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1,
                  width=36).pack(side="left", padx=(0, 6))
@@ -1342,7 +1342,7 @@ class CsvStatePanel(tk.Frame):
             ("LOAD FILE",    ACCENT, BG, self._load_file),
             ("SAMPLE DATA",  INPUT,  TEXT, self._load_sample),
         ]:
-            tk.Button(fc, text=txt, font=(FNT, 9, "bold"),
+            tk.Button(fc, text=txt, font=(FNT, 11, "bold"),
                       bg=col, fg=fg2, relief="flat", cursor="hand2",
                       padx=8, pady=4, command=cmd).pack(side="left", padx=3)
 
@@ -1356,52 +1356,52 @@ class CsvStatePanel(tk.Frame):
         ctrl.pack(fill="x", padx=8, pady=8)
 
         self.btn_run   = tk.Button(ctrl, text="▶  RUN",
-                                   font=(FNT, 11, "bold"), bg=GREEN, fg=BG,
+                                   font=(FNT, 13, "bold"), bg=GREEN, fg=BG,
                                    relief="flat", cursor="hand2",
                                    padx=16, pady=6, command=self._run,
                                    state="disabled")
         self.btn_run.pack(side="left", padx=(0, 4))
 
         self.btn_step  = tk.Button(ctrl, text="⏭  STEP",
-                                   font=(FNT, 11, "bold"), bg=BLUE, fg=BG,
+                                   font=(FNT, 13, "bold"), bg=BLUE, fg=BG,
                                    relief="flat", cursor="hand2",
                                    padx=14, pady=6, command=self._step_once,
                                    state="disabled")
         self.btn_step.pack(side="left", padx=(0, 4))
 
         self.btn_pause = tk.Button(ctrl, text="⏸  PAUSE",
-                                   font=(FNT, 11, "bold"), bg=YELLOW, fg=BG,
+                                   font=(FNT, 13, "bold"), bg=YELLOW, fg=BG,
                                    relief="flat", cursor="hand2",
                                    padx=14, pady=6, command=self._pause,
                                    state="disabled")
         self.btn_pause.pack(side="left", padx=(0, 4))
 
         self.btn_abort = tk.Button(ctrl, text="■  ABORT",
-                                   font=(FNT, 11, "bold"), bg=RED, fg=TEXT,
+                                   font=(FNT, 13, "bold"), bg=RED, fg=TEXT,
                                    relief="flat", cursor="hand2",
                                    padx=14, pady=6, command=self._abort,
                                    state="disabled")
         self.btn_abort.pack(side="left", padx=(0, 14))
 
         # Options inline
-        tk.Label(ctrl, text="DELAY OVR:", font=(FNT, 9), fg=MUTED, bg=CARD
+        tk.Label(ctrl, text="DELAY OVR:", font=(FNT, 11), fg=MUTED, bg=CARD
                  ).pack(side="left")
         tk.Entry(ctrl, textvariable=self._delay_var, width=5,
-                 font=(FNT, 10), bg=INPUT, fg=TEXT,
+                 font=(FNT, 12), bg=INPUT, fg=TEXT,
                  insertbackground=TEXT, relief="flat",
                  highlightbackground=BORDER, highlightthickness=1
                  ).pack(side="left", padx=(3, 10))
         tk.Checkbutton(ctrl, text="Wait motors", variable=self._wait_var,
-                       font=(FNT, 9), bg=CARD, fg=TEXT,
+                       font=(FNT, 11), bg=CARD, fg=TEXT,
                        selectcolor=INPUT, activebackground=CARD
                        ).pack(side="left", padx=(0, 10))
         tk.Checkbutton(ctrl, text="Loop", variable=self._loop_var,
-                       font=(FNT, 9), bg=CARD, fg=TEXT,
+                       font=(FNT, 11), bg=CARD, fg=TEXT,
                        selectcolor=INPUT, activebackground=CARD
                        ).pack(side="left")
 
         self.lbl_status = tk.Label(ctrl, text="No states loaded.",
-                                   font=(FNT, 9), fg=MUTED, bg=CARD)
+                                   font=(FNT, 11), fg=MUTED, bg=CARD)
         self.lbl_status.pack(side="right", padx=10)
 
         # Progress bar
@@ -1422,7 +1422,7 @@ class CsvStatePanel(tk.Frame):
                       width=200)
         tw.pack(side="left", fill="y", padx=(0, 4))
         tw.pack_propagate(False)
-        tk.Label(tw, text=" ⏱ TIMING", font=(FNT, 7, "bold"),
+        tk.Label(tw, text=" ⏱ TIMING", font=(FNT, 9, "bold"),
                  fg=MUTED, bg=PANEL).pack(fill="x", pady=2)
 
         clocks = tk.Frame(tw, bg=CARD)
@@ -1431,7 +1431,7 @@ class CsvStatePanel(tk.Frame):
         def _clock_col(parent, label, init, col, w=9):
             f = tk.Frame(parent, bg=CARD)
             f.pack(side="left", padx=4)
-            tk.Label(f, text=label, font=(FNT, 6), fg=MUTED, bg=CARD).pack()
+            tk.Label(f, text=label, font=(FNT, 8), fg=MUTED, bg=CARD).pack()
             lbl = tk.Label(f, text=init, font=(FNT, w, "bold"), fg=col, bg=CARD)
             lbl.pack()
             return lbl
@@ -1442,16 +1442,16 @@ class CsvStatePanel(tk.Frame):
 
         ph = tk.Frame(tw, bg=CARD)
         ph.pack(pady=2)
-        tk.Label(ph, text="PHASE", font=(FNT, 6), fg=MUTED, bg=CARD).pack()
+        tk.Label(ph, text="PHASE", font=(FNT, 8), fg=MUTED, bg=CARD).pack()
         self.lbl_phase = tk.Label(ph, text="IDLE",
-                                  font=(FNT, 9, "bold"), fg=MUTED, bg=CARD)
+                                  font=(FNT, 11, "bold"), fg=MUTED, bg=CARD)
         self.lbl_phase.pack()
 
-        tk.Label(tw, text="STEP HISTORY", font=(FNT, 6), fg=MUTED, bg=CARD
+        tk.Label(tw, text="STEP HISTORY", font=(FNT, 8), fg=MUTED, bg=CARD
                  ).pack(anchor="w", padx=8)
         self._timing_lbls = []
         for _ in range(5):
-            l = tk.Label(tw, text="", font=(FNT, 7), fg=DIM, bg=CARD, anchor="w")
+            l = tk.Label(tw, text="", font=(FNT, 9), fg=DIM, bg=CARD, anchor="w")
             l.pack(fill="x", padx=8)
             self._timing_lbls.append(l)
 
@@ -1460,7 +1460,7 @@ class CsvStatePanel(tk.Frame):
                              highlightbackground=BORDER, highlightthickness=1)
         tbl_outer.pack(side="left", fill="both", expand=True)
         tk.Label(tbl_outer, text=" STATE TABLE  (click row to jump)",
-                 font=(FNT, 7, "bold"), fg=MUTED, bg=PANEL).pack(fill="x")
+                 font=(FNT, 9, "bold"), fg=MUTED, bg=PANEL).pack(fill="x")
 
         tbl_cv = tk.Canvas(tbl_outer, bg=CARD, highlightthickness=0, height=200)
         tbl_sb = ttk.Scrollbar(tbl_outer, orient="vertical", command=tbl_cv.yview)
@@ -1523,7 +1523,7 @@ class CsvStatePanel(tk.Frame):
         for i in range(6):
             cols.append((MOTOR_SHORT[i], 13))
         for t, w in cols:
-            tk.Label(hdr, text=t, font=(FNT, 7, "bold"), fg=MUTED, bg=PANEL,
+            tk.Label(hdr, text=t, font=(FNT, 9, "bold"), fg=MUTED, bg=PANEL,
                      width=w, anchor="w").pack(side="left", padx=2, pady=2)
 
     def _populate_table(self):
@@ -1538,16 +1538,16 @@ class CsvStatePanel(tk.Frame):
             row.bind("<Button-1>", lambda e, i=idx: self._jump_to(i))
             self._row_frames.append(row)
 
-            tk.Label(row, text=str(idx + 1), font=(FNT, 7), fg=MUTED, bg=bg,
+            tk.Label(row, text=str(idx + 1), font=(FNT, 9), fg=MUTED, bg=bg,
                      width=3, anchor="w").pack(side="left", padx=2, pady=2)
-            tk.Label(row, text=state.name[:14], font=(FNT, 7), fg=TEXT, bg=bg,
+            tk.Label(row, text=state.name[:14], font=(FNT, 9), fg=TEXT, bg=bg,
                      width=14, anchor="w").pack(side="left", padx=2)
-            tk.Label(row, text=f"{state.delay_s:.1f}s", font=(FNT, 7),
+            tk.Label(row, text=f"{state.delay_s:.1f}s", font=(FNT, 9),
                      fg=YELLOW, bg=bg, width=6, anchor="w").pack(side="left", padx=2)
             for i in range(6):
                 d, s = state.motors[i]
                 col  = MOTOR_COLORS[i] if abs(d) > 0.5 else MUTED
-                tk.Label(row, text=f"{d:+.0f}@{s:.0f}", font=(FNT, 7),
+                tk.Label(row, text=f"{d:+.0f}@{s:.0f}", font=(FNT, 9),
                          fg=col, bg=bg, width=13, anchor="w").pack(side="left", padx=2)
 
     def _jump_to(self, idx: int):
@@ -1776,14 +1776,14 @@ class ContinuumGUI(tk.Tk):
 
         tk.Label(top,
                  text="⬡  CONTINUUM MANIPULATOR  ·  3-SEG TENDON DRIVE  ·  PCC CONTROL  v3",
-                 font=(FNT_H, 12, "bold"), fg=ACCENT, bg=PANEL
+                 font=(FNT_H, 14, "bold"), fg=ACCENT, bg=PANEL
                  ).pack(side="left", padx=16, pady=10)
 
         self._lbl_c = tk.Label(top, text="● DISCONNECTED",
-                               font=(FNT, 10, "bold"), fg=RED, bg=PANEL)
+                               font=(FNT, 12, "bold"), fg=RED, bg=PANEL)
         self._lbl_c.pack(side="right", padx=12)
         mode = "SIM" if self._sim else f"HW · {self._port}"
-        tk.Label(top, text=mode, font=(FNT, 9), fg=MUTED, bg=PANEL
+        tk.Label(top, text=mode, font=(FNT, 11), fg=MUTED, bg=PANEL
                  ).pack(side="right", padx=4)
         self._mkbtn(top, "DISCONNECT", PANEL, RED,   self._disconnect).pack(side="right", padx=3)
         self._mkbtn(top, "CONNECT",    ACCENT, BG,   self._connect   ).pack(side="right", padx=3)
@@ -1791,21 +1791,21 @@ class ContinuumGUI(tk.Tk):
         # ── Capstan radii config bar ───────────────────────────────────────────
         rb = tk.Frame(self, bg=CARD, highlightbackground=BORDER, highlightthickness=1)
         rb.pack(fill="x", padx=8, pady=(4, 2))
-        tk.Label(rb, text="CAPSTAN RADII (mm):", font=(FNT, 9, "bold"),
+        tk.Label(rb, text="CAPSTAN RADII (mm):", font=(FNT, 11, "bold"),
                  fg=ACCENT, bg=CARD).pack(side="left", padx=(12, 6), pady=6)
         self._radii_vars = []
         for i in range(6):
             col = MOTOR_COLORS[i]
-            tk.Label(rb, text=f"M{i+1}:", font=(FNT, 9, "bold"),
+            tk.Label(rb, text=f"M{i+1}:", font=(FNT, 11, "bold"),
                      fg=col, bg=CARD).pack(side="left", padx=(6, 2))
             rv = tk.StringVar(value=str(CAPSTAN_RADII_MM[i]))
             self._radii_vars.append(rv)
             tk.Entry(rb, textvariable=rv, width=5,
-                     font=(FNT, 10), bg=INPUT, fg=TEXT,
+                     font=(FNT, 12), bg=INPUT, fg=TEXT,
                      insertbackground=TEXT, relief="flat",
                      highlightbackground=BORDER, highlightthickness=1
                      ).pack(side="left", padx=(0, 3))
-        tk.Button(rb, text="APPLY", font=(FNT, 9, "bold"),
+        tk.Button(rb, text="APPLY", font=(FNT, 11, "bold"),
                   bg=ACCENT, fg=BG, relief="flat", cursor="hand2",
                   padx=10, pady=4, command=self._apply_radii
                   ).pack(side="left", padx=(10, 0))
@@ -1825,14 +1825,14 @@ class ContinuumGUI(tk.Tk):
 
         self._tab_manual_btn = tk.Button(
             tbar, text="  🕹  MANUAL JOG  ",
-            font=(FNT, 10, "bold"), bg=ACCENT, fg=BG,
+            font=(FNT, 12, "bold"), bg=ACCENT, fg=BG,
             relief="flat", cursor="hand2", padx=10, pady=6,
             command=self._show_manual)
         self._tab_manual_btn.pack(side="left", padx=(0, 4))
 
         self._tab_csv_btn = tk.Button(
             tbar, text="  📋  CSV SEQUENCER  ",
-            font=(FNT, 10, "bold"), bg=PANEL, fg=MUTED,
+            font=(FNT, 12, "bold"), bg=PANEL, fg=MUTED,
             relief="flat", cursor="hand2", padx=10, pady=6,
             command=self._show_csv)
         self._tab_csv_btn.pack(side="left")
@@ -1901,13 +1901,13 @@ class ContinuumGUI(tk.Tk):
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
         lh = tk.Frame(self, bg=PANEL)
         lh.pack(fill="x")
-        tk.Label(lh, text="SYSTEM LOG", font=(FNT, 8), fg=MUTED,
+        tk.Label(lh, text="SYSTEM LOG", font=(FNT, 10), fg=MUTED,
                  bg=PANEL, pady=3).pack(side="left", padx=12)
-        tk.Button(lh, text="CLEAR", font=(FNT, 8), bg=PANEL, fg=MUTED,
+        tk.Button(lh, text="CLEAR", font=(FNT, 10), bg=PANEL, fg=MUTED,
                   relief="flat", cursor="hand2",
                   command=self._clear_log).pack(side="right", padx=12)
         self._lbox = scrolledtext.ScrolledText(
-            self, height=5, font=(FNT, 9),
+            self, height=5, font=(FNT, 11),
             bg=PANEL, fg=MUTED, relief="flat",
             state="disabled", wrap="word")
         self._lbox.pack(fill="x")
@@ -2091,7 +2091,7 @@ class ContinuumGUI(tk.Tk):
 
     @staticmethod
     def _mkbtn(parent, text, bg, fg, cmd):
-        return tk.Button(parent, text=text, font=(FNT, 10, "bold"),
+        return tk.Button(parent, text=text, font=(FNT, 12, "bold"),
                          bg=bg, fg=fg, activebackground=bg,
                          relief="flat", cursor="hand2",
                          command=cmd, padx=12, pady=6)
