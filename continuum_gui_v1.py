@@ -75,11 +75,11 @@ MOTOR_COLORS = [
     SEG_COLORS[2], SEG_COLORS[2],
 ]
 MOTOR_NAMES  = [
-    "M1  S1+ (pull)", "M2  S1− (release)",
-    "M3  S2+ (pull)", "M4  S2− (release)",
-    "M5  S3+ (pull)", "M6  S3− (release)",
+    "", "",
+    "", "",
+    "", "",
 ]
-MOTOR_SHORT  = ["M1 S1+", "M2 S1-", "M3 S2+", "M4 S2-", "M5 S3+", "M6 S3-"]
+MOTOR_SHORT  = ["M1", "M2", "M3", "M4", "M5", "M6"]
 
 
 def mm_to_deg(mm: float, motor_idx: int = 0) -> float:
@@ -394,10 +394,8 @@ class CapstanPanel(tk.Frame):
             grid.columnconfigure(i, weight=1)
 
             tk.Frame(cell, bg=sc, height=3).pack(fill="x")
-            role = "PULL +" if MOTOR_IS_POS[i] else "REL −"
             tk.Label(cell, text=f"M{i+1}", font=(FNT, 14, "bold"),
                      fg=col, bg=CARD).pack(pady=(5, 0))
-            tk.Label(cell, text=role, font=(FNT, 9), fg=DIM, bg=CARD).pack()
 
             cv = tk.Canvas(cell, width=100, height=66, bg=CARD, highlightthickness=0)
             cv.pack(padx=4, pady=3)
@@ -1048,11 +1046,6 @@ class ContinuumVisualizer(tk.Frame):
             cv.create_text((x0 + x1) // 2, 27,
                            text=f"{d:+.1f}mm", fill=TEXT, font=(FNT, 11, "bold"))
 
-            # Role label
-            role = "PULL" if MOTOR_IS_POS[i] else "REL"
-            cv.create_text((x0 + x1) // 2, 43,
-                           text=role, fill=DIM, font=(FNT, 8))
-
     # ── POSE HUD update ───────────────────────────────────────────────────────
 
     def _update_pose(self):
@@ -1114,7 +1107,7 @@ class ManualJogPanel(tk.Frame):
         # Column headers
         hdr = tk.Frame(self, bg=PANEL)
         hdr.pack(fill="x")
-        specs = [("", 4), ("Motor / Role", 16), ("Displacement bar", 24),
+        specs = [("", 4), ("Motor", 7), ("Displacement bar", 24),
                  ("Live mm", 9), ("  Jog", 10), ("Step", 9),
                  ("Target mm", 10), ("Speed mm/s", 11)]
         for t, w in specs:
@@ -1143,10 +1136,8 @@ class ManualJogPanel(tk.Frame):
 
         # Colour stripe
         tk.Frame(row, bg=col, width=4).pack(side="left", fill="y")
-        tk.Label(row, text=f"M{i+1}\n{'PUL' if MOTOR_IS_POS[i] else 'REL'}",
+        tk.Label(row, text=f"M{i+1}",
                  font=(FNT, 9, "bold"), fg=col, bg=bg, width=5).pack(side="left", padx=3)
-        tk.Label(row, text=MOTOR_NAMES[i], font=(FNT, 9), fg=MUTED,
-                 bg=bg, width=16).pack(side="left", padx=2)
 
         # Displacement bar
         c = tk.Canvas(row, width=155, height=26, bg=bg, highlightthickness=0)

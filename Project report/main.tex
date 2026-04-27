@@ -90,52 +90,44 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
 \draw[heavyline] (ac) -- (ac_breaker);
 \draw[thick] (ac_breaker.south) -- (0, 7.8);
 
-% ─── PSUs (Pushed down for balanced spacing) ─────────────────────────
+% ─── PSUs ────────────────────────────────────────────────────────────
 \foreach \x/\i in {-5.0/1, -2.0/2, 1.0/3, 4.0/4} {
     \node[component] (psu\i) at (\x, 6.2) {48V PSU \i};
     \draw[heavyline] (0, 7.8) -| (psu\i.north);
 }
 
-% ─── Busbars (Pushed down for balanced spacing) ──────────────────────
+% ─── Busbars ─────────────────────────────────────────────────────────
 \draw[red!80!black, thick, fill=red!10] (-5.8, 3.4) rectangle (4.5, 4.0) node[midway, font=\small\bfseries, text=red!80!black] {Positive Busbar};
 \draw[black, thick, fill=gray!20] (-5.8, 2.2) rectangle (4.5, 2.8) node[midway, font=\small\bfseries, text=black] {Negative Busbar};
 
-% \node[font=\footnotesize, text=red, fill=blue!3] at (-1.5, 4.5) {(All PSUs connect to busbars via equal-length 2/0 AWG DC cables)};
-
 % ─── PSU Drops to Busbars ────────────────────────────────────────────
 \foreach \x/\i in {-5.0/1, -2.0/2, 1.0/3, 4.0/4} {
-    % Positive Drop (Red) - Tightened spacing
     \draw[heavyposline] ([xshift=-0.25cm]\x, 5.6) -- ([xshift=-0.25cm]\x, 4.0);
-    
-    % Negative Return (Black) - Flows UP to PSU, jumping cleanly over Positive Busbar
     \draw[heavynegline, jump] ([xshift=0.25cm]\x, 2.8) -- ([xshift=0.25cm]\x, 5.6);
 }
 
-% ─── Enclosure Components ────────────────────────────────────────────
-% Bulk Caps (Safely BEFORE breaker, bridging busbars on the far right)
-\node[component, minimum width=1.8cm, minimum height=1.4cm, font=\scriptsize] (caps) at (5.6, 3.1) {Bulk Cap\\12$\times$ 4700$\mu$F};
-\draw[heavyposline] (4.5, 3.7) -- (4.7, 3.7); % Connects Pos busbar to caps
-\draw[heavynegline] (4.5, 2.5) -- (4.7, 2.5); % Connects Neg busbar to caps
-
-% Main Breaker (Far left)
+% ─── Main Breaker (Far left) ─────────────────────────────────────────
 \node[component] (breaker) at (-3.5, 0.8) {150A Marine\\Breaker};
-% Power leaves bottom edge of Positive Busbar, jumps over Neg busbar
 \draw[heavyposline, jump] (-5.6, 3.4) |- (breaker.west);
 
-% Fuse Box (Center)
-\node[component] (fusebox) at (1.5, 0.8) {6-Way Fuse Box\\(20A per circuit)};
-\draw[heavyposline] (breaker.east) -- (fusebox.west); 
+% ─── Bulk Caps: NOW between breaker output and fuse box ──────────────
+\node[component, minimum width=1.8cm, minimum height=1.4cm, font=\scriptsize] (caps) at (-0.5, 0.8) {Bulk Cap\\12$\times$ 4700$\mu$F};
+\draw[heavyposline] (breaker.east) -- (caps.west);          % Pos: breaker → caps
+%\draw[heavynegline] (-5.8, 2.5) -| (caps.south);           % Neg: busbar → caps (bottom)
 
-% ─── Motors & External Routing (Shifted up to reduce arrow length) ───
+% ─── Fuse Box ────────────────────────────────────────────────────────
+\node[component] (fusebox) at (3.0, 0.8) {6-Way Fuse Box\\(20A per circuit)};
+\draw[heavyposline] (caps.east) -- (fusebox.west);          % Pos: caps → fuse box
+
+% ─── Motors & External Routing ───────────────────────────────────────
 \foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
     \node[smallnode] (m\i) at (\x, -4.0) {Motor \i\\+ 1000$\mu$F};
 }
 
 % Positive Fan-Out to Motors (Red)
-\draw[heavyposline] (fusebox.south) -- (1.5, -1.0) -- (-5.2, -1.0); % Sweeps left
-\draw[heavyposline] (1.5, -1.0) -- (4.8, -1.0); % Sweeps right
+\draw[heavyposline] (fusebox.south) -- (3.0, -1.0) -- (-5.2, -1.0);
+\draw[heavyposline] (3.0, -1.0) -- (4.8, -1.0);
 \foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
-    % Jumps over the horizontal black return trunk below it
     \draw[posline, jump] ([xshift=-0.2cm]\x, -1.0) -- ([xshift=-0.2cm]m\i.north);
 }
 
@@ -143,12 +135,10 @@ All motors are connected in a daisy-chain configuration. Two 120$\Omega$ termina
 \foreach \x/\i in {-5.0/1, -3.0/2, -1.0/3, 1.0/4, 3.0/5, 5.0/6} {
     \draw[negline] ([xshift=0.2cm]m\i.north) -- ([xshift=0.2cm]\x, -2.0);
 }
-% Main Negative Trunk: Gathers cleanly at Y=-2.0, goes up the LEFT side to avoid crossing
 \draw[heavynegline] (5.2, -2.0) -- (-6.1, -2.0) -- (-6.1, 2.5) -- (-5.8, 2.5);
 
 \end{tikzpicture}
-\caption{System-level electrical routing schematic. The architecture illustrates the parallel 48V DC power generation, centralized busbar distribution, and hierarchical circuit protection for the 6-axis actuator network.}
-%The layout explicitly places the bulk capacitors before the main circuit protection, maintaining safety, while properly decoupling the motors at the endpoints. All lines use explicit corridors to prevent ambiguity.}
+\caption{System-level electrical routing schematic. The architecture illustrates the parallel 48V DC power generation, centralized busbar distribution, and hierarchical circuit protection for the 6-axis actuator network. Bulk capacitors are placed after the 150A main breaker for protected decoupling.}
 \end{figure}
 
 \begin{table}[H]
