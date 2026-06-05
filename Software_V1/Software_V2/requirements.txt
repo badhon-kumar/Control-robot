@@ -1,0 +1,20 @@
+# requirements.txt
+# MyActuator RMD-X8-120 Motor Control System
+# ──────────────────────────────────────────────
+# Install base dependencies:
+#   pip install -r requirements.txt
+#
+# For REAL hardware with CANable / slcan adapters:
+#   pip install "python-can[serial]"
+#
+# For REAL hardware with PEAK PCAN-USB:
+#   pip install "python-can[pcan]"
+#
+# The simulation mode has NO additional dependencies
+# beyond the Python standard library.
+
+# Required for real CAN hardware only:
+python-can>=4.3.1
+
+# Optional but recommended:
+pyserial>=3.5        # Required by python-can for slcan (CANable) adapters
