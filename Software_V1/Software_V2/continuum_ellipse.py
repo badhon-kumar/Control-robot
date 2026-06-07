@@ -928,6 +928,9 @@ class ContinuumVisualizer(tk.Frame):
         self._cv_heat  = None
         self._pose_widgets = {}
         self._iso_zoom_lbl = None
+        self._redraw_job = None
+        self._last_redraw_t = 0.0
+        self._frame_interval_ms = 33  # ~30 FPS, smoother than bursty immediate redraws
         self._build()
         self.after(120, self._redraw)
 
@@ -1055,9 +1058,30 @@ class ContinuumVisualizer(tk.Frame):
 
     def set_displacements(self, disps):
         self._disps = list(disps)
+        self._request_redraw()
+
+    def _request_redraw(self):
+        if self._redraw_job is not None:
+            return
+        elapsed_ms = (time.perf_counter() - self._last_redraw_t) * 1000.0
+        delay_ms = max(1, int(self._frame_interval_ms - elapsed_ms))
+        self._redraw_job = self.after(delay_ms, self._redraw)
+
+    def _cancel_pending_redraw(self):
+        if self._redraw_job is not None:
+            try:
+                self.after_cancel(self._redraw_job)
+            except Exception:
+                pass
+            self._redraw_job = None
+
+    def _redraw_now(self):
+        self._cancel_pending_redraw()
         self._redraw()
 
     def _redraw(self):
+        self._redraw_job = None
+        self._last_redraw_t = time.perf_counter()
         self._draw_side()
         self._draw_top()
         self._draw_iso()
@@ -1228,8 +1252,8 @@ class ContinuumVisualizer(tk.Frame):
             return x1, y2, z2
 
         scale = min(w, h) * 0.72 / TOTAL_LEN_MM * self._iso_zoom
-        base_screen_x = w * 0.42
-        base_screen_y = h * 0.78
+        base_screen_x = w * 0.50
+        base_screen_y = h * 0.16
         margin = 30
 
         base_corners = [(-20.0, 0.0, -16.0), (20.0, 0.0, -16.0),
@@ -1244,17 +1268,6 @@ class ContinuumVisualizer(tk.Frame):
             scale *= (w - 2 * margin) / (span_x * scale)
         if span_y > 1e-9 and span_y * scale > (h - 2 * margin):
             scale *= (h - 2 * margin) / (span_y * scale)
-
-        screen_x = [base_screen_x + rx * scale for rx in rx_vals]
-        screen_y = [base_screen_y - ry * scale for ry in ry_vals]
-        if min(screen_x) < margin:
-            base_screen_x += margin - min(screen_x)
-        if max(screen_x) > w - margin:
-            base_screen_x -= max(screen_x) - (w - margin)
-        if min(screen_y) < margin:
-            base_screen_y += margin - min(screen_y)
-        if max(screen_y) > h - margin:
-            base_screen_y -= max(screen_y) - (h - margin)
 
         def project(p3):
             rx, ry, rz = rotate(p3)
