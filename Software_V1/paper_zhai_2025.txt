@@ -1,0 +1,1422 @@
+RESEARCH ARTICLE
+
+Model-Based Control of a Continuum
+Manipulator with Online Jacobian Error                                                                         Citation: Zhai Y, Xu J, Mo H, Zhang C,
+Compensation Using Kalman Filtering                                                                            Sun D. Model-Based Control of a
+                                                                                                               Continuum Manipulator with Online
+                                                                                                               Jacobian Error Compensation Using
+Yujia Zhai1, Jihao Xu1, Hangjie Mo2, Chunqi Zhang1, and Dong Sun1*                                             Kalman Filtering. Cyborg Bionic Syst.
+1                                                                                                              2025;6:Article 0339. https://doi.
+Department of Biomedical Engineering, City University of Hong Kong, Hong Kong SAR, China. 2School of           org/10.34133/cbsystems.0339
+Management, Hefei University of Technology, Hefei 230009, China.
+                                                                                                               Submitted 25 February 2025
+                                                                                                               Revised 12 May 2025
+
+
+
+
+                                                                                                                                                            Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+*Address correspondence to: medsun@cityu.edu.hk                                                                Accepted 18 June 2025
+                                                                                                               Published 7 August 2025
+Flexible continuum robots exhibit excellent adaptability to a wide range of tasks and environments. However,
+accurate and efficient modeling and control remain challenging due to their inherent nonlinearities. In        Copyright © 2025 Yujia Zhai et al.
+this article, a hybrid model-based and online data-driven control method is proposed for a tendon-driven       Exclusive licensee Beijing Institute of
+                                                                                                               Technology Press. No claim to original
+continuum robot, which requires no prior dataset collection or training. The method incorporates the
+                                                                                                               U.S. Government Works. Distributed
+Jacobian derived from the piecewise constant curvature model with online Jacobian error compensation           under a Creative Commons
+using a Kalman filter. Consecutive Jacobian estimates are constrained to reduce fluctuations and improve       Attribution License (CC BY 4.0).
+stability in real-time estimation. Experimental results validate the effectiveness of the proposed hybrid
+approach in enhancing tracking accuracy and demonstrate its robustness against external disturbances.
+
+
+
+
+Introduction                                                                 framework for modeling deformable objects, is also applied to
+                                                                             study the behavior of continuum robots [22,23]. While both
+Continuum robots have recently attracted considerable attention              the Cosserat rod model and FEM achieve high accuracy, they
+as a promising alternative to traditional rigid-link manipulators.           come with substantial computational costs.
+Inspired by natural appendages like elephant trunks, these robots                Alternatively, data-driven methods have been widely employed
+exhibit inherent compliance with infinite degrees of freedom and             to model and control continuum robots based on input–output
+the ability to adapt seamlessly to various objects and environ-              data, without considering the complex physical relationships. For
+ments [1]. Their flexibility and dexterity have enabled their wide-          instance, neural networks have been leveraged to directly learn
+spread applications in fields such as robotic surgery [2–4],                 the inverse kinematics of continuum robots [4,8,10,24]. In Refs.
+navigation and inspection in confined spaces [5–7], and col-                 [25,26], Koopman operator theory was applied to model the
+laborative manipulation tasks [8–11]. Nevertheless, the large                dynamics of soft continuum robots in data-driven frameworks
+deformations, frictional effects, and intrinsic nonlinearities of            alongside optimal control methods. Without requiring prior train-
+continuum robots pose substantial challenges for precise model-              ing, Lu et al. [27] proposed an online learning approach that adap-
+ing and control [12,13].                                                     tively controls continuum robots using radial basis function (RBF)
+    The modeling of continuum robots has been extensively                    networks. Alambeigi et al. [28,29] presented real-time Jacobian
+explored using various principle-based approaches rooted in                  calculation for surgical continuum manipulators using Broyden’s
+kinematics and mechanics. The pseudo-rigid body theory                       method. Mo et al. [30] improved the robustness of online Jacobian
+approximates the continuous shape of the robot as a redundant                estimation for a continuum manipulator in an endoscopic system
+rigid-link manipulator [14]. The piecewise constant curvature                by incorporating a sensing data buffer. Li et al. [31] proposed an
+(PCC) model represents each continuum segment as a circular                  adaptive Kalman filter to directly estimate the Jacobian of a pneu-
+arc [15], offering computational efficiency but potentially com-             matic continuum robot in real time. Furthermore, in Ref. [32], a
+promising precision due to its simplistic assumptions. In Ref.               combined offline and online framework was introduced to control
+[16], an enhanced state parameterization was proposed to                     an industrial continuum manipulator by integrating a neural net-
+address the singularities inherent in the PCC model. To capture              work with Broyden’s update rule. In Ref. [33], localized Gaussian
+higher-order nonlinearities, variable curvature models were                  process regression was employed to control a continuum robot
+developed by representing the backbone shape with Euler arc                  incorporating online dataset updating.
+splines [17] or by parameterizing the curvature with polynomi-                   Additionally, researchers have explored hybrid model-based
+als [18,19]. From a mechanics-based perspective, Cosserat rod                and data-driven methods for continuum robots, combining
+theory characterizes these robots through differential equa-                 the advantages of both manners. Huang et al. [34] integrated
+tions that account for forces and torques distributed along the              physical models with neural networks to account for the
+robot’s body [20,21], making it effective for analyzing the influ-           unmodeled nonlinear effects of a parallel continuum robot.
+ence of tendon routings and parallel structures in continuum                 Li et al. [35] utilized the RBF network to interpolate the Jacobian
+robots. The finite element method (FEM), a more general                      of a continuum manipulator globally based on a Jacobian set
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                              1
+calculated from the Cosserat model. In Refs. [36,37], data-                            costly, the proposed method can be computed efficiently by
+driven models were employed as solution encoders to enhance                            integrating the PCC model with a Kalman filter. Additionally,
+computational efficiency when solving principle-based models                           the prediction precision of the PCC model, which is generally
+of continuum robots. In Ref. [38], a hybrid Jacobian estimation                        limited, is enhanced within the proposed method using real-
+strategy was proposed for concentric tube robots, using the                            time measurements. Meanwhile, for online Jacobian estima-
+model-based result as a weighted initial estimate. To improve                          tion, rather than relying solely on measurements, the proposed
+modeling accuracy, data-driven approaches were employed in                             method leverages the prediction of the kinematic model,
+Refs. [39,40] to learn the residual kinematics of continuum                            enabling fast convergence [28,29,38]. In contrast to learning-
+robots.                                                                                based approaches such as neural networks [4,8,10,24] and data-
+    In this article, we propose a hybrid model-based and data-                         driven Koopman operator theory [25,26], which require large
+driven control framework for a continuum robot, where the                              datasets for training, the proposed method eliminates the need
+model-based Jacobian error is estimated and compensated                                for offline data collection or training, making it convenient to
+online with a Kalman filter. The kinematics of the continuum                           implement.
+robot are initially established based on the PCC model. To
+address the modeling inaccuracies of the PCC model, a Kalman                           Materials and Methods
+filter is employed to estimate the Jacobian error online, using
+                                                                                       This section first presents the mechanical design of the tendon-
+
+
+
+
+                                                                                                                                                               Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+real-time actuation inputs and end-effector pose measurements.
+Offline data collection or training is not required with the pro-                      driven continuum manipulator. Subsequently, the kinematic
+posed method. For experimental validation, we design and                               modeling and closed-loop control of the developed continuum
+fabricate a 3-segment tendon-driven continuum manipulator                              robot are elaborated, incorporating an online Jacobian error
+as illustrated in Fig. 1, with the end-effector pose measurements                      compensation method to enhance control performance. For
+obtained via visual feedback. The effectiveness of the proposed                        the simplification of modeling and control, we assume that the
+method is demonstrated through a series of trajectory tracking                         movement of the continuum robot is quasi-static and neglect
+experiments. Comparative experiments are conducted to evalu-                           its dynamics.
+ate the influence of various model parameters. Furthermore,
+the robustness of the proposed method under external distur-                           Continuum manipulator design
+bances is validated by applying unexpected payloads to the                             The continuum manipulator is composed of 3 segments, as
+continuum robot.                                                                       shown in Fig. 2. Each segment features an end disk for tendon
+    This study assumes that the continuum robot operates in a                          attachment and 5 spacer disks for tendon guidance. The manipu-
+quasi-static manner, with small movement between consecu-                              lator is mounted to the base via an additional base disk. All disks
+tive time steps. This assumption allows the transition and mea-                        are connected to the preceding disk through a passive revolute
+surement models of the Jacobian error to be approximated                               joint with a rotating pin, as illustrated in Fig. 2B. This mechanical
+linearly with additive stochastic noise. Consequently, the                             design constrains the manipulator’s bending motion to the x − y
+Jacobian error can be efficiently estimated using a linear                             plane. Additionally, 2 elastic backbones, passing through all the
+Kalman filter. To mitigate numerical oscillations in the Jacobian                      disks, are attached to the end-effector and the base disk, provid-
+elements during real-time estimation, additional constraints                           ing the robot with the required stiffness and flexibility.
+are applied to the Jacobian estimate. The robot’s Jacobian is                              In Fig. 2, the tendons of different segments are marked with
+divided into 2 components: the position Jacobian and the                               distinct colors for clear identification. Each continuum segment
+attitude Jacobian. Thresholds are defined for each component                           is actuated by 2 tendons in an antagonistic manner. As shown
+to limit their variation between consecutive iterations. This                          in Fig. 2C, the driving tendons are attached only to the end disk
+approach enhances the robustness of the online estimation                              of the respective segment and slide through all preceding disks
+against noise and disturbances, resulting in smooth Jacobian                           via specifically designed holes. The offsets of the tendon pairs
+estimates and, consequently, smooth robot trajectories in                              from the disk center are adjusted along the backbone to avoid
+closed-loop control.                                                                   interaction and friction between tendons. Each tendon, after
+    Compared to mechanics-based models such as Cosserat rod                            passing through the base disk, is independently connected to
+theory [20,21] and FEM [22,23], which are computationally                              a motor via a capstan. The configuration of the continuum
+                                                                                       manipulator is controlled by adjusting the lengths of the 6 ten-
+                                                                                       dons using 6 motors.
+
+                                                                                       PCC model
+                                                                                       To simplify the kinematics, the shape of each segment of the
+                                                                                       continuum robot is assumed{ as }a circular arc, as shown in
+                                                                                                                                    { at the
+                                                                                       Fig. 3. The inertial frame x 0 , y 0 is defined     } center of
+                                                                                       the base disk, while the body-fixed frame x i , y i (i = 1, 2, 3)
+                                                                                       is located at the center of the end disk of the ith segment.
+                                                                                       The x axes of all coordinate frames are aligned with the cor-
+                                                                                       responding tangent directions of the backbone. For the ith
+                                                                                       segment, the backbone length and the bending angle are
+                                                                                       denoted by Li and 𝜃 i, respectively, while the lengths of the
+Fig. 1. Prototype of the tendon-driven continuum robot. Three reflective markers are   2 driving tendons are represented by li,1 and li,2, as depicted
+attached to the end-effector for visual positioning.                                   in Fig. 3.
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                2
+                      y
+
+
+          z                  x
+
+
+
+
+                                                                                                                                                                                Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+Fig. 2. Design of the continuum manipulator. (A) 3D model of the manipulator structure, consisting of 3 continuum segments. The manipulator operates in the x − y plane.
+(B) Close-up view of the revolute joint between adjacent disks. (C) Diagram illustrating the tendon routing inside the manipulator.
+
+
+
+
+                                                                                         l2,1
+
+                                                            y1                                                 y2
+                                                                                  x1
+
+                                                                                        L2                                              y3
+                                 y0             l1,1                                                                        l3,1
+
+                                                                                       l2,2                                                            x3
+                                                       L1                                                               L3
+                                                                                                                x2
+                                                 x0
+                                                            l1,2
+                                                                                                                     l3,2
+
+
+Fig. 3. Diagram depicting the modeling of the 3-segment continuum robot. The inertial frame x0 , y0 is centered at the base disk, while the body-fixed frame for each segment
+                                                                                           {       }
+
+ xi , yi i = 1, 2, 3 is assigned to the center of its respective end disk.
+{       }(          )
+
+
+
+   In accordance with the geometrical{ relationships, {the homo-}
+                                                                                                        [ ]T
+                                                                                              where p = x, y is the position of the end-effector with
+geneous transformation from frame x i , y i to frame x i−1 , y i−1
+                                            }
+                                                                                                ﻿
+can be expressed as                                                                                       L          L ( (
+                                                                                                       x = 1 sin𝜃 1 + 2 sin 𝜃 1 + 𝜃 2 − sin𝜃 1
+                                                                                                                                      )         )
+   ﻿                                                                                                      𝜃1         𝜃2
+                    ⎡                     Li         ⎤                                                                                                 (3)
+                    ⎢ cos𝜃 i − sin𝜃 i     𝜃i
+                                             sin𝜃 i ⎥                                                       L3 ( (                 )     (          ))
+                    ⎢                                ⎥                                                    +     sin 𝜃 1 + 𝜃 2 + 𝜃 3 − sin 𝜃 1 + 𝜃 2
+           T ii−1 = ⎢                 Li �          �⎥          (1)                                         𝜃3
+                    ⎢ sin𝜃 i cos𝜃 i 𝜃 i 1 − cos𝜃 i ⎥
+                    ⎢                                ⎥                                           ﻿
+                    ⎣ 0         0             1      ⎦                                                     L1 (          ) L (                (         ))
+                                                                                                      y=       1 − cos𝜃 1 + 2 cos𝜃 1 − cos 𝜃 1 + 𝜃 2
+  Thus, the {homogeneous           transformation from the robot’s                                         𝜃1                 𝜃2
+                                                                                                             L3 ( (           )     (                ))                  (4)
+end-effector x 3 , y 3 to the base disk x 0 , y 0 is obtained as
+                      }                     {      }
+                                                                                                           +     cos 𝜃 1 + 𝜃 2 − cos 𝜃 1 + 𝜃 2 + 𝜃 3
+  ﻿                                                                                                          𝜃3
+                                     ⎡ cos𝜓 − sin𝜓 x ⎤
+                                                                                              and 𝜓 denotes the end-effector’s attitude:
+            T 30 = T 10 T 21 T 32 = ⎢ sin𝜓 cos𝜓 y ⎥           (2)                               ﻿
+                                     ⎢               ⎥
+                                     ⎣ 0       0   1 ⎦                                                             𝜓 = 𝜃1 + 𝜃2 + 𝜃3                                      (5)
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                                 3
+    Here, p and 𝜓 are taken as the outputs produced by the                     ﻿                 𝝃 k = 𝛾𝝃 k−1 + w k−1                 (11)
+continuum robot.
+    To actuate the continuum manipulator, the lengths of 3 pairs            where k denotes the time index, 𝛾 ∈ [0, 1] is a tunable fading
+of tendons are regulated. For the 2 driving tendons of the same             rate to determine the influence of the previous state, and
+segment, when one is elongated, the other is assumed to shorten             ﻿ k−1 ∈ ℝ9 is Gaussian noise with zero mean and covariance
+                                                                            w
+correspondingly by the same amount. Denoting Δli as the ten-                matrix Qk−1 ∈ ℝ9×9. Correspondingly, the estimated state and
+don length change of the ith segment, we have                               its covariance matrix P k ∈ ℝ9×9 are propagated as
+    ﻿                                                                           ﻿
+                   i                     i
+                 ∑                       ∑
+                                                             (6)                                      𝝃− = 𝛾𝝃 +                       (12)
+           Δli =     Lj − li,1 = li, 2 −   Lj , i = 1, 2, 3                                            k      k−1
+                  j=1                    j=1
+                                                                               ﻿                P− = 𝛾 2P+
+                                                                                                 k       k−1
+                                                                                                             + Qk−1                   (13)
+             [ inputs of]the
+   The actuation                   robot can be expressed in vector
+                              T
+form as u = Δl1 , Δl2 , Δl3 . Based on the geometric relation-              where the notations (⋅)− and (⋅)+ represent the prior and pos-
+ships, the connection between the robot’s bending angles and                terior estimates, respectively.
+the actuation inputs is obtained as                                            The prior estimate of the Jacobian error is subsequently
+                                                                            updated using the actuation inputs and the end-effector pose
+
+
+
+
+                                                                                                                                              Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+   ﻿
+                             r1 𝜃 1 = Δl1                       (7)         measurements. Under the assumption of quasi-static motion,
+   ﻿                                                                        the robot movement between consecutive time steps is small.
+                       r2 𝜃 1 + r1 𝜃 2 = Δl2                    (8)
+                                                                            Thus, the measurement of the Jacobian error is approximated
+   ﻿                 r3 𝜃 1 + r2 𝜃 2 + r1 𝜃 3 = Δl3                  (9)    through a linear model with additive stochastic noise as
+                                                                               ﻿         [             ]
+where r1, r2, and r3 are the offsets between the tendons and the                           pk − pk−1
+                                                                                                         = H k m J ∨k + 𝝃 k + v k
+                                                                                                              (            )
+                                                                                                                                      (14)
+disk center, as illustrated in Fig. 3. Solving 𝜃 1, 𝜃 2, and 𝜃 3 from                      𝜓 k − 𝜓 k−1
+Eqs. (7) to (9), and substituting them into Eqs. (3) to (5), estab-
+lishes a direct relationship between the end-effector pose and              where v k ∈ ℝ3 is zero-mean Gaussian noise with covariance
+the actuation inputs as p = p(u) and 𝜓 = 𝜓(u). Furthermore,                 matrix Rk ∈ ℝ3×3, m J k∨ is the vectorized form of the Jacobian
+by taking the derivative with respect to the actuation inputs,              of the PCC model, and H k ∈ ℝ3×9 is the measurement matrix,
+the Jacobian of the robot can be derived as                                 given by
+    ﻿                                                                           ﻿
+                                      𝜕p ⎤                                                   ⎡ uT − uT                   01×3 ⎤
+                       ⎡ mJ p ⎤ ⎡                                                            ⎢ k       k−1
+                                                                                                               01×3
+                                                                                                                                ⎥
+                  m    ⎢           ⎢
+                              ⎥ ⎢ 𝜕u ⎥⎥                                                H k = ⎢ 01×3 u − u    T    T
+                                                                                                                         01×3 ⎥        (15)
+                    J =⎢      ⎥=⎢          ∈ ℝ3×3                                                            k    k−1
+                                         ⎥                        (10)                       ⎢                              T ⎥
+                       ⎢ m ⎥ ⎢ 𝜕𝜓 ⎥                                                          ⎣ 01×3            01×3 uk − uk−1 ⎦
+                                                                                                                       T
+                       ⎣ J𝜓 ⎦ ⎣          ⎦
+                                      𝜕u
+                                                                            with 01×3 being a 1 × 3 all-zero row vector. The covariance
+where the superscript m (⋅) denotes the Jacobian calculated                 matrices Qk−1 and Rk balance the filter’s reliance on the prior
+directly using the PCC model, m J p ∈ ℝ2×3 represents the posi-             estimation and the measurement [41]. Subsequently, the Kalman
+                   m       1×3
+tion Jacobian, and J 𝜓 ∈ ℝ represents the attitude Jacobian.                gain K k ∈ ℝ9×3 is computed as
+Based on the robot’s Jacobian, a closed-loop controller can be                  ﻿                      (                 )−1
+conveniently developed, as elaborated later.                                               K k = P− H T H k P−
+                                                                                                  k k
+                                                                                                               H T + Rk
+                                                                                                             k k
+                                                                                                                                       (16)
+
+Online Jacobian error compensation                                             Then, the posterior estimate of the Jacobian error and its
+ Due to the strong assumption of the piecewise circular shape,              covariance matrix are given by
+ the modeling precision of the PCC model is generally limited.                 ﻿
+ Specifically, there exists an error between m J , the Jacobian of
+                                                                                                 ([             ]                )
+                                                                                                    pk − pk−1          (m ∨ − )
+ the PCC model given by Eq. (10), and J , the actual Jacobian of
+                                                                                    +    −
+                                                                                   𝝃k = 𝝃k + K k                  − H k J k + 𝝃k    (17)
+                                                                                                    𝜓 k − 𝜓 k−1
+ the continuum robot. Define 𝛿J = J − m J , where 𝛿J ∈ ℝ3×3 rep-
+ resents the Jacobian error of the PCC model caused by model-                                       (             )
+                                                                               ﻿                P+ = I 9 − K k H k P−                 (18)
+ ing inaccuracies. To enhance the modeling precision, a Kalman                                   k                  k
+ filter is employed to estimate 𝛿J and compensate for the model-
+ based Jacobian in real time.                                               where I 9 is a 9 × 9 identity matrix. Finally, the estimated
+      The Jacobian error is considered as the state of the Kalman filter.   Jacobian of the continuum robot can be obtained as
+ Specifically, for ease of implementation, the state vector of the             ﻿                   e
+                                                                                                     J k = m J k + 𝛿J +
+                                                                                                                      k             (19)
+ Kalman filter is defined as 𝝃 = 𝜹J ∨ ∈ ℝ9, where the operator
+(﻿ ⋅)∨ : ℝ3×3 ↦ ℝ9 concatenates a matrix into a column vector by            where 𝛿J +
+                                                                                     k
+                                                                                       is reconstructed from its vectorized form 𝝃 +
+                                                                                                                                   k
+                                                                                                                                     given
+ stacking its row vectors. Based on the quasi-static movement               in Eq. (17) provided by the Kalman filter.
+ assumption of the continuum manipulator, we assume that the                   Furthermore, to avoid dramatic variation of the estimated
+ evolution of the Jacobian error between adjacent time steps is linear      Jacobian during the real-time estimation process, additional
+                                                                                                                                      c
+ with additive stochastic noise. Therefore, the state transition model      constraints are applied to restrict the updates. Denoting J as
+ is expressed in discrete form as                                           the constrained Jacobian, it is calculated as
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                               4
+    ﻿                                 ⎡ c J p,k ⎤                                          ﻿                                       ([        ]        [       ] )
+                                      ⎢         ⎥                                                           uk+1 = uk + 𝛽 c J †k
+                                                                                                                                        pr                p
+                                c
+                              Jk = ⎢            ⎥                                                                                                 −                       (21)
+                                      ⎢c        ⎥                                                                                       𝜓r    k           𝜓   k
+                                      ⎣ J 𝜓,k ⎦
+                                  �                     �                                  where 𝛽 is a controller gain that can be tuned according to
+         ⎡ ⎧ e J p,k ,       if �e J p,k − c J p,k−1 � ⩽ 𝜎 p         ⎤
+         ⎢⎪                       �                     �            ⎥                     [32], and c J † is the damped pseudoinverse of the constrained
+                              eJ        c
+         ⎢⎨c                      p,k − J p,k−1                      ⎥                                  k
+         ⎢ ⎪ J p,k−1 + 𝜎 p �e                         , otherwise ⎥                        Jacobian estimate, given by
+                                                    �
+         ⎢⎩                 � J p,k − J p,k−1 �
+                            �
+                                        c
+                                                    �                ⎥ (20)                   ﻿                       (                    )−1
+        =⎢                                                           ⎥                                          c †
+                                                                                                                 J k = c J Tk c J k + 𝛼I 3     c T
+                                                                                                                                                Jk    (22)
+         ⎢                                                           ⎥
+         ⎢ ⎧ eJ ,                  �e                      �         ⎥
+                               if  �  J      −  c
+                                                  J        � ⩽ 𝜎
+         ⎢ ⎪ 𝜓,k                   � 𝜓,k            𝜓,k−1 �      𝜓   ⎥
+         ⎢⎨                     eJ      −  cJ                        ⎥
+         ⎢ ⎪ c J 𝜓,k−1 + 𝜎 𝜓                             , otherwise ⎥
+                                   𝜓,k        𝜓,k−1
+         ⎣⎩                  �                         �             ⎦
+                             �e J 𝜓,k − c J 𝜓,k−1 �
+                             �                         �
+
+
+
+
+                                                                                                                                                                                   Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+where the operator ‖⋅‖ represents the Frobenius norm, and 𝜎 p
+and 𝜎 𝜓 are tunable thresholds to limit the variation magnitudes
+of the position Jacobian and the attitude Jacobian, respectively.
+The superscripts e (⋅) and c (⋅) distinguish the unconstrained and
+constrained Jacobian estimates, respectively.
+
+Closed-loop control
+To control[ the continuum
+                    ]T        robot to track the reference pose
+trajectory pTr , 𝜓 r , a Jacobian-based control law is applied in
+discrete form as                                                                           Fig. 4. Block diagram of the control scheme with online Jacobian error compensation.
+
+
+
+
+Fig. 5. Experimental setup for conducting closed-loop control of the continuum manipulator. (A) Photograph of the platform. (B) Side view of the interior of the actuation unit.
+(C) Schematic diagram of the platform. (D) Image captured by the infrared camera with 3 reflective markers labeled.
+
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                                    5
+where I 3 is a 3 × 3 identity matrix, and 𝛼 is a small positive       the default in the subsequent experiments, except in the
+constant added to prevent singularities when computing the            section “Comparisons of trajectory frequency and model
+matrix inverse. Fig. 4 illustrates the block diagram of the control   parameters”, where the values of 𝛾 , 𝜎 p, and 𝜎 𝜓 were varied to
+strategy. The controller leverages the model-based Jacobian           compare performance.
+with online compensation, which alleviates modeling errors                To obtain the real-time pose feedback, 3 reflective markers,
+and enhances control performance.                                     each 6 mm in diameter and with a combined weight of 0.6 g,
+                                                                      are attached to the robot’s end-effector. An infrared webcam
+Results                                                               (640 × 480 resolution) with integrated infrared light-emitting
+                                                                      diodes is positioned with its lens perpendicular to the manipu-
+To verify the effectiveness of the proposed online Jacobian error     lator’s bending plane, at a distance of 38.5 cm. The camera was
+compensation method, experiments were conducted on the                calibrated using the MATLAB Computer Vision Toolbox. Fig.
+continuum manipulator platform. The trajectory tracking capa-         5D shows an image captured by the infrared camera, where the
+bilities, the behaviors under parameter variations, as well as the    reflective markers are clearly distinguishable from the back-
+performance under external disturbances were tested and               ground due to their high infrared reflectivity. Leveraging the
+demonstrated.                                                         markers’ high reflectivity and the manipulator’s planar motion,
+                                                                      the end-effector pose can be efficiently tracked in real time at
+
+
+
+
+                                                                                                                                            Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+Experimental setup                                                    30 Hz by identifying the positions of the 3 markers using
+Fig. 5 illustrates the setup of the experimental platform. The        the Python OpenCV library. The extracted end-effector pose
+closed-loop control of the continuum robot was implemented            is then sent to the main controller thread in real time via the
+with 3 primary components: the continuum manipulator as               User Datagram Protocol (UDP). Considering noise and dis-
+the main robotic structure, the actuation unit for driving the        turbances, a 4th-order Butterworth low-pass filter with a
+manipulator, and the infrared camera for providing real-time          cutoff frequency of 2 Hz was employed to preprocess the
+feedback.                                                             end-effector pose measurements and the actuation inputs
+   The continuum manipulator consists of 3 segments, each             used in the Jacobian estimation.
+comprising 5 spacer disks and 1 end disk, resulting in a diam-
+eter of 13 mm and a total length of 270 mm. The disks are             Trajectory tracking
+3-dimensionally (3D) printed from nylon and are connected             To validate the proposed online Jacobian error compensation
+in sequence via revolute joints with NiTi rod pins (1 mm in           method, 3 trajectory tracking experiments were conducted. For
+diameter). Two additional NiTi rods, each 0.6 mm in diameter,         comparison, in addition to the proposed method, the contin-
+function as the elastic backbones. The total mass of the manip-       uum robot was also controlled to follow the trajectory in each
+ulator is 8.4 g. For actuation, 6 nylon cables, each 0.5 mm in        experiment using only the Jacobian derived from the PCC
+diameter, are used as driving tendons. Inside the actuation           model, without the online compensation.
+unit (Fig. 5B), each tendon is connected to a 3D-printed resin            In the first experiment (Traj. 1), the robot was instructed to
+capstan, which is driven by a brushless motor (LKMTECH                follow an end-effector position trajectory while keeping a hori-
+MF5015, with an integrated motor driver). The control algo-           zontal attitude, as depicted by the composite image in Fig. 6.
+rithm was implemented in Python at 20 Hz on a 64-bit                  The reference position
+Windows 10 PC (i5-8265U), which communicates with the                                     ( )trajectory was defined(by the  ) equations
+                                                                                           2π                           2π
+6 motors via the RS-485 protocol. The model parameters                ﻿xr = 240 + 20 cos   T
+                                                                                              t   mm and yr = 60 sin    T
+                                                                                                                           t   mm, with
+are provided in Table 1 , where SI units are adopted and              the period T = 40 s. The measured trajectories and tracking
+omitted for brevity. These parameter settings were used as            errors (measurement minus reference) are presented in Fig. 6B
+                                                                      to D. The root mean square errors (RMSEs) of the proposed
+                                                                      method in the x, y, and 𝜓 directions are 1.1 mm, 2.1 mm, and
+                                                                      1.1°, respectively, and the mean absolute errors (MAEs) are
+  Table 1. Model parameters in SI units                               0.9 mm, 1.8 mm, and 0.8°. Both metrics are lower than those
+                                                                      of the PCC model without online compensation, which exhib-
+  Parameter                                 Value                     its RMSEs of 1.6 mm, 2.3 mm, and 1.4° and MAEs of 1.4 mm,
+                                                                      1.9 mm, and 1.1° in the x, y, and 𝜓 directions, as summarized
+  L1, L2, L3                           0.09, 0.09, 0.09               in Table 2.
+  r1, r2, r3                        0.005, 0.0035, 0.002                  In the second experiment (Traj. 2), the continuum manipu-
+  𝛼                                            1                      lator demonstrated its ability to regulate the end-effector atti-
+  𝛽                                           0.5                     tude as shown ( in )Fig. 7. The reference attitude was specified as
+  𝛾                                           0.5                     ﻿ r = 30◦ sin 2π
+                                                                      𝜓               T
+                                                                                        t with the same period T = 40 s, while the
+  𝜎p                                         0.35                     robot was controlled to keep the end-effector position station-
+  𝜎𝜓                                          2.5                     ary. Fig. 7A illustrates a sequence of images showing the robot’s
+  𝝃0                                         09×1                     configuration at different end-effector attitudes, along with the
+  P0                                         09×9                     trajectory measurements (Fig. 7B) and tracking errors (Fig.
+                                                                      7C). As listed in Table 2, the proposed method achieves RMSEs
+  Qk                                           I9
+                                                                      of 0.6 mm, 0.8 mm, and 1.5°, and MAEs of 0.4 mm, 0.6 mm,
+  Rk                                  0.5‖          ‖2
+                                         ‖uk − uk−1 ‖ I3              and 1.3° in the x, y, and 𝜓 directions, respectively, outperform-
+                                                                      ing the PCC model, which has RMSEs of 1.3 mm, 0.9 mm, and
+                                                                      2.1°, and MAEs of 1.0 mm, 0.6 mm, and 1.9°.
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                             6
+A                                                                                                                                        B                65
+
+                                                                                                         t = 10 s
+                         y
+
+
+
+
+                                                                                                                                             y (mm)
+                                                                               t = 20 s                                                                       0                       Reference
+                                                                                                                                                                                      PCC model
+                                  x                                                                                                                                                   Proposed
+
+                                                                                                                                                         -65
+                                                                                                                                                           215 240 265
+                                       3 cm                                                              t = 30 s
+                                                                                                                                                                  x (mm)
+C              265                                                                                  D                    10
+    x (mm)
+
+
+
+
+                                                                                                          x error (mm)
+               240
+
+
+
+
+                                                                                                                                                                                                          Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+                                                                                                                          0
+               215
+                         0        10             20                30                  40
+                   65
+                                                                                                                         -10
+     y (mm)
+
+
+
+
+                                                                                                                               0              10                     20               30             40
+                    0
+                                                                                                                         10
+                   -65
+
+
+                                                                                                          y error (mm)
+                         0        10             20                30                  40
+                    5
+                                                                                                                          0
+     ψ (°)
+
+
+
+
+                    0
+
+                    -5                                                                                                   -10
+                         0        10             20                30                  40                                      0              10                     20               30             40
+                                              Time (s)                                                                                                            Time (s)
+E                   15                                                        15                                                                         15
+     J1,1
+
+
+
+
+                                                              J1,2
+
+
+
+
+                                                                                                                                         J1,3
+                     0                                                         0                                                                          0
+
+                   -15                                                       -15                                                                        -15
+                         0   10        20       30       40                        0      10         20                    30       40                        0      10          20         30       40
+                    30                                                       30                                                                          30
+       J2,1
+
+
+
+
+                                                                 J2,2
+
+
+
+
+                                                                                                                                            J2,3
+
+
+
+
+                    15                                                       15                                                                          15
+
+                     0                                                         0                                                                          0
+                         0   10        20       30       40                        0      10         20                    30       40                        0      10          20         30       40
+                   250                                                       250                                                                        250
+    J3,1 (rad/m)
+
+
+
+
+                                                              J3,2 (rad/m)
+
+
+
+
+                                                                                                                                         J3,3 (rad/m)
+
+
+
+
+                   125                                                       125                                                                        125
+
+                     0                                                         0                                                                          0
+                         0   10        20       30       40                        0      10         20                    30       40                        0      10          20         30       40
+                                  Time (s)                                                        Time (s)                                                                   Time (s)
+Fig. 6. End-effector position trajectory tracking with a horizontal attitude (Traj. 1). (A) Composite image taken from the experiment. (B) Position trajectories. (C) Time plots
+of position and attitude. (D) Position tracking errors. (E) Jacobian elements.
+
+
+
+
+    Table 2. Results for end-effector trajectory tracking
+
+                                                 Proposed (RMSE/MAE)                                                                     PCC model (RMSE/MAE)
+    Experiment                              x/mm                             y/mm              𝜓 /(°)                              x/mm                                   y/mm             𝜓 /(°)
+    Traj. 1                                 1.1/0.9                          2.1/1.8           1.1/0.8                             1.6/1.4                            2.3/1.9              1.4/1.1
+    Traj. 2                                 0.6/0.4                          0.8/0.6           1.5/1.3                             1.3/1.0                            0.9/0.6              2.1/1.9
+    Traj. 3                                 0.9/0.8                          1.9/1.7           1.3/1.1                             1.7/1.4                            2.1/1.7              1.6/1.4
+
+
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                                                            7
+A
+       y                                                                   y                                                                          y
+
+
+                   x                                                                  x                                                                       x
+                               t = 10 s        ψ = 29.4°                                       t = 20 s        ψ = 1.8°                                                t = 30 s     ψ = -30.5°
+
+B              245                                                                                         C                   10                                                        Reference
+    x (mm)
+
+
+
+
+               240                                                                                                                                                                       PCC model
+                                                                                                                                                                                         Proposed
+               235
+                         0                10            20                30                       40
+                    5
+
+
+
+
+                                                                                                                 ψ error (°)
+    y (mm)
+
+
+
+
+                    0                                                                                                           0
+
+                    -5
+                         0                10            20                30                       40
+                   35
+
+
+
+
+                                                                                                                                                                                                          Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+    ψ (°)
+
+
+
+
+                    0
+
+                   -35                                                                                                         -10
+                         0                10            20                30                       40                                0             10                     20             30          40
+                                                      Time (s)                                                                                                         Time (s)
+D                   15                                                                15                                                                     15
+    J1,1
+
+
+
+
+                                                                      J1,2
+
+
+
+
+                                                                                                                                              J1,3
+                       0                                                               0                                                                      0
+
+                   -15                                                               -15                                                                     -15
+                           0         10        20       30       40                        0        10      20                   30      40                        0       10       20        30     40
+                    30                                                                30                                                                      30
+       J2,1
+
+
+
+
+                                                                         J2,2
+
+
+
+
+                                                                                                                                                 J2,3
+                    15                                                                15                                                                      15
+
+                       0                                                               0                                                                       0
+                           0         10        20       30       40                        0        10      20                   30      40                        0       10       20        30     40
+                   250                                                               250                                                                     250
+    J3,1 (rad/m)
+
+
+
+
+                                                                      J3,2 (rad/m)
+
+
+
+
+                                                                                                                                              J3,3 (rad/m)
+
+
+
+                   125                                                               125                                                                     125
+
+                       0                                                               0                                                                       0
+                           0         10        20       30       40                        0        10      20                   30      40                        0       10       20        30     40
+                                           Time (s)                                                       Time (s)                                                                Time (s)
+Fig. 7. End-effector attitude trajectory tracking, with the position controlled to remain stationary (Traj. 2). (A) Sequential images taken from the experiment. (B) Time plots of
+position and attitude. (C) Attitude tracking errors. (D) Jacobian elements.
+
+
+    In the third experiment (Traj. 3), the robot was required to                                              In summary, the results from the 3 trajectory tracking exper-
+simultaneously follow both the position and attitude trajecto-                                             iments demonstrate that the proposed online Jacobian error
+ries of the end-effector, as shown in Fig. 8. The position trajec-                                         compensation method improves tracking accuracy in both posi-
+tory from the first experiment and the attitude trajectory from                                            tion and attitude.
+the second experiment were employed as references. The mea-
+surement results are shown in Fig. 8B to D. The proposed                                                   Comparisons of trajectory frequency and model
+method yields RMSEs of 0.9 mm, 1.9 mm, and 1.3°, along with
+MAEs of 0.8 mm, 1.7 mm, and 1.1° in the x, y, and 𝜓 direc-                                                 parameters
+                                                                                                           This section demonstrates the performance of the proposed
+tions, respectively. These results demonstrate better perfor-
+                                                                                                           method under variations in the trajectory period T and the
+mance than the PCC model, which shows RMSEs of 1.7 mm,
+                                                                                                           model parameters γ, 𝜎 p, and 𝜎 𝜓 . For evaluation,(the )robot
+2.1 mm, and 1.6°, and MAEs of 1.4 mm, 1.7 mm, and 1.4°, as
+listed in Table 2.                                                                                         was instructed to execute Traj. 3 (xr = 240 + 20 cos 2π   t mm,
+                                                                                                                        ( )                            ( )         T
+    Figs. 6E, 7E, and 8E illustrate the Jacobian elements of the                                                          2π                             2π
+                                                                                                           ﻿yr = 60 sin T t mm, and 𝜓 r = 30◦ sin T t , as described
+proposed method and the PCC model for the 3 tracking experi-
+ments, respectively. Additionally, the Jacobian errors estimated                                           previously) under different parameter settings. The tracking
+by the proposed method during the 3 trajectories are pre-                                                  result of Traj. 3 from the previous section, with T = 40 s, γ =
+sented in Figs. S1 to S3. Compared to the PCC model, the                                                   0.5, 𝜎 p = 0.35, and 𝜎 𝜓 = 2.5, is used as the baseline and illus-
+proposed method compensated for the robot Jacobian online                                                  trated again in Table 3 for comparison.
+using real-time measurement data, resulting in lower tracking                                                  First, the continuum manipulator was commanded to fol-
+errors.                                                                                                    low trajectories with varying periods: T = 20 s, 10 s, and 5 s.
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                                                            8
+A                                                                                                                              B                65
+
+                                                                                                        t = 10 s
+                             y
+
+
+
+
+                                                                                                                                    y (mm)
+                                                                                   t = 20 s                                                         0                     Reference
+                                                                                                                                                                          PCC model
+                                      x
+                                                                                                                                                                          Proposed
+
+                                                                                                                                               -65
+                                                                                                        t = 30 s                                 215 240 265
+                                           3 cm
+                                                                                                                                                        x (mm)
+C                  265                                                                              D             5
+    x (mm)
+
+
+
+
+                                                                                                        x error
+                                                                                                         (mm)
+                   240                                                                                            0
+
+
+
+
+                                                                                                                                                                                           Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+                   215                                                                                        -5
+                         0            10            20                  30                 40                         0             10                    20              30          40
+                    65                                                                                            5
+    y (mm)
+
+
+
+
+                                                                                                        y error
+                                                                                                         (mm)
+                     0                                                                                            0
+
+                   -65                                                                                        -5
+                         0            10            20                  30                 40                         0             10                    20              30          40
+                    35                                                                                            5
+                                                                                                        ψ error
+     ψ (°)
+
+
+
+
+                     0                                                                                    (°)     0
+
+                   -35                                                                                        -5
+                         0            10            20                  30                 40                         0             10                    20              30          40
+                                                  Time (s)                                                                                              Time (s)
+E                   15                                                           15                                                           15
+    J1,1
+
+
+
+
+                                                                  J1,2
+
+
+
+
+                                                                                                                               J1,3
+                     0                                                            0                                                            0
+
+                   -15                                                           -15                                                          -15
+                         0       10        20      30        40                        0      10     20           30      40                        0      10        20        30     40
+                    30                                                            30                                                           30
+       J2,1
+
+
+
+
+                                                                     J2,2
+
+
+
+
+                                                                                                                                  J2,3
+
+
+
+
+                    15                                                            15                                                           15
+
+                     0                                                             0                                                            0
+                         0       10        20      30        40                        0      10     20           30      40                        0      10        20        30     40
+                   250                                                           250                                                          250
+    J3,1 (rad/m)
+
+
+
+
+                                                                  J3,2 (rad/m)
+
+
+
+
+                                                                                                                               J3,3 (rad/m)
+
+
+
+
+                   125                                                           125                                                          125
+
+                     0                                                             0                                                            0
+                         0       10        20      30        40                        0      10     20           30      40                        0      10        20        30     40
+                                      Time (s)                                                     Time (s)                                                        Time (s)
+Fig. 8. Hybrid tracking of end-effector position and attitude trajectories (Traj. 3). (A) Composite image showing the tracking process. (B) Position trajectories. (C) Time plots
+of position and attitude. (D) Tracking errors. (E) Jacobian elements.
+
+
+
+The results are presented in Fig. 9, with the tracking errors                                       conducted with γ = 0 (the minimum value) and γ = 1 (the
+(RMSEs and MAEs) listed in Table 3. As T decreases, the                                             maximum value), respectively. The results are shown in Fig.
+tracking errors increase significantly. This behavior is attrib-                                    10, with the corresponding tracking errors listed in Table 3.
+uted to the quasi-static nature of the proposed method, which                                       For γ = 0, the Jacobian estimation did not rely on any historical
+assumes slow robot movement and ignores dynamic effects.                                            information. Compared to the baseline, the tracking error is
+Shorter trajectory periods challenge this assumption, leading                                       slightly lower in the y direction but higher in both the x and
+to reduced tracking accuracy. In practice, the trajectory fre-                                      ﻿ directions. In contrast, when γ = 1, the tracking errors are
+                                                                                                    𝜓
+quency should be kept low to achieve high tracking precision,                                       significantly larger because the estimated Jacobian became
+which is a limitation of the proposed method.                                                       overly reliant on previous estimations, leading to poor perfor-
+   Then, the effect of γ, the fading rate that governs the influ-                                   mance. The results indicate that γ should be tuned within [0,1]
+ence of the previous estimation on the current Jacobian error                                       to achieve a balance between the current and historical estima-
+estimate, was investigated. Two tracking experiments were                                           tions, ensuring accurate tracking performance.
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                                            9
+     Table 3. Results for varying parameters in trajectory tracking
+
+                                                                                             End-effector error (RMSE/MAE)
+     Parameter                                                           x/mm                             y/mm                                   𝜓 /(°)
+        Baseline                                                     0.9/0.8                             1.9/1.7                                1.3/1.1
+         ﻿T = 20 s                                                   3.1/2.4                             3.6/3.0                                2.8/2.4
+        ﻿T = 10 s                                                    6.9/5.1                             6.5/5.3                                4.8/4.3
+       ﻿T = 5 s                                                      11.3/8.7                           15.6/12.7                               8.4/7.4
+      ﻿γ = 1                                                         2.4/1.9                             4.1/3.1                                2.4/1.9
+     ﻿γ = 0                                                           1.5/1.3                            1.8/1.5                                1.5/1.2
+     𝜎 p = 1.4, 𝜎 𝜓 = 10                                              1.4/1.2                            2.3/1.9                                1.6/1.3
+     𝜎 p = 0.0875, 𝜎 𝜓 = 0.625                                       2.0/1.5                             2.1/1.8                                2.2/1.9
+
+
+
+
+                                                                                                                                                                              Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+ A                  75                                    C                   75                                     E                  75
+           y (mm)
+
+
+
+
+                                                                     y (mm)
+
+
+
+
+                                                                                                                               y (mm)
+                     0                                                         0                                                         0
+
+
+
+
+                                            Reference
+                                            T = 20 s                                                  T = 10 s                                                   T=5s
+                    -75                                                       -75                                                       -75
+                      200    240          280                                   200    240          280                                   200    240          280
+                            x (mm)                                                    x (mm)                                                    x (mm)
+ B                                                        D                                                          F
+         280                                                      280                                                        280
+x (mm)
+
+
+
+
+                                                         x (mm)
+
+
+
+
+                                                                                                                    x (mm)
+
+
+
+
+         240                                                      240                                                        240
+
+         200                                                      200                                                        200
+               0               10                   20                   0               5                    10                   0              2.5                    5
+          75                                                       75                                                        75
+y (mm)
+
+
+
+
+                                                          y (mm)
+
+
+
+
+                                                                                                                    y (mm)
+
+
+
+
+           0                                                        0                                                         0
+
+         -75                                                       -75                                                       -75
+               0               10                   20                   0               5                    10                   0              2.5                    5
+          35                                                       35                                                        35
+ψ (°)
+
+
+
+
+                                                          ψ (°)
+
+
+
+
+                                                                                                                    ψ (°)
+
+
+
+
+           0                                                        0                                                         0
+
+         -35                                                       -35                                                       -35
+               0               10                   20                   0               5                    10                   0              2.5                    5
+                            Time (s)                                                  Time (s)                                                  Time (s)
+
+ Fig. 9. Comparison of tracking trajectories with different periods. Position trajectories and time plots of position and attitude are shown for (A and B) T = 20 s, (C and
+ D) T = 10 s, and (E and F) T = 5 s.
+
+
+
+
+    Finally, the impact of thresholds 𝜎 p and 𝜎 𝜓, which regulate                        and 𝜎 𝜓 = 0.625 (one-fourth of the baseline) and another with
+ the update magnitudes of the estimated Jacobian, was examined.                         𝜎﻿ p = 1.4 and 𝜎 𝜓 = 10 (4 times the baseline). The results are
+ Two tracking experiments were conducted: one with 𝜎 p = 0.0825                          shown in Fig. 11, with the corresponding tracking errors
+
+
+ Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                            10
+ A                                           B                  Reference          γ=0                             C
+         75                                          280                           γ=1                                      10
+
+
+
+
+                                            x (mm)
+
+
+
+
+                                                                                                                  x error
+                                                                                                                   (mm)
+                                                     240                                                                     0
+
+                                                     200                                                                  -10
+                                                           0        10          20            30           40                    0           10          20       30   40
+                                                      75                                                                    10
+
+
+
+
+                                            y (mm)
+
+
+
+
+                                                                                                                  y error
+y (mm)
+
+
+
+
+                                                                                                                   (mm)
+          0                                            0                                                                     0
+
+                                                     -75                                                                  -10
+                                                           0        10          20            30           40                    0           10          20       30   40
+                                                      35                                                                    10
+
+
+
+
+                                                                                                                  ψ error
+                                            ψ (°)
+
+
+
+
+                                                                                                                    (°)
+                                                       0                                                                     0
+
+         -75                                         -35                                                                  -10
+           200        240          280                     0        10          20            30           40                    0           10          20       30   40
+                   x (mm)                                                    Time (s)                                                                  Time (s)
+
+
+
+
+                                                                                                                                                                            Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+ Fig. 10. Comparison of γ in trajectory tracking. (A) Position trajectories. (B) Time plots of position and attitude. (C) Tracking errors.
+
+
+
+
+ A                                            B                Reference       σp = 0.0875, σψ = 0.625 C
+                                                     280                                                                    10
+         75                                                                    σp = 1.4, σψ = 10
+                                            x (mm)
+
+
+
+
+                                                                                                                  x error
+                                                                                                                   (mm)
+                                                     240                                                                     0
+
+                                                     200                                                                  -10
+                                                           0         10         20            30           40                    0           10          20       30   40
+                                                      75                                                                    10
+                                            y (mm)
+
+
+
+
+                                                                                                                  y error
+y (mm)
+
+
+
+
+                                                                                                                   (mm)
+          0                                            0                                                                     0
+
+                                                     -75                                                                  -10
+                                                           0         10         20            30           40                    0           10          20       30   40
+                                                      35                                                                    10
+                                                                                                                  ψ error
+                                            ψ (°)
+
+
+
+
+                                                                                                                    (°)
+
+
+
+
+                                                       0                                                                     0
+
+         -75                                         -35                                                                  -10
+           200        240          280                     0         10         20            30           40                    0           10          20       30   40
+                   x (mm)                                                    Time (s)                                                                  Time (s)
+ Fig. 11. Comparison of 𝜎 p and 𝜎 𝜓 in trajectory tracking. (A) Position trajectories. (B) Time plots of position and attitude. (C) Tracking errors.
+
+
+
+
+ summarized in Table 3. For the smaller thresholds (𝜎 p = 0.0825                               This experiment was repeated 3 times with objects of different
+ and 𝜎 𝜓 = 0.625), the trajectory exhibited greater deviation from                             weights, as shown in Fig. 12A (a tape core, 5.6 g), Fig. 12B
+ the reference due to insufficient updates in the Jacobian estima-                             (a corner bracket, 12.8 g), and Fig. 12 C (a USB converter,
+                                                                                               17.5 g). After the payload was applied, the robot devi-
+ tion. In contrast, when 𝜎 p = 1.4 and 𝜎 𝜓 = 10, the trajectory devi-                          ated temporarily from its original configuration but
+ ated less but experienced noisy oscillations caused by excessive                              quickly returned to the desired pose, as illustrated in Fig. 12D
+ variation of the estimated Jacobian. These findings suggest that                              to F, with larger deviations occurring for heavier payloads,
+ moderate 𝜎 p and 𝜎 𝜓 should be adopted to reduce tracking devia-                              as expected. The largest deviation happened when the USB
+ tion and oscillation.                                                                         converter was suspended, which is twice the weight of the
+                                                                                               continuum manipulator. In this situation, the maximum abso-
+ Performance under external disturbances                                                       lute errors (MaxAEs) of the end-effector in the x, y, and 𝜓
+ This section evaluates the performance of the proposed method                                 directions are 5.3 mm, 38.9 mm, and 12.5°, respectively, as
+ when encountering external disturbances. Two experiments                                      listed in Table 4.
+ were conducted by hanging unexpected payloads on the con-                                         In the second experiment, the USB converter was added
+ tinuum manipulator.                                                                           as an unexpected disturbance while the robot was executing
+    In the first experiment, the robot was initially controlled to                             an end-effector position trajectory with a horizontal attitude,
+ maintain a stationary end-effector pose. To apply the distur-                                 as shown in Fig. 13A. The robot was commanded to follow
+ bance, a payload was hung on the robot using a nylon cable.                                   the same Traj. 1 described in the section “Trajectory tracking”.
+
+
+ Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                            11
+         y                                                     y                                                         y
+
+
+              x                                                     x                                                          x
+
+
+
+
+  A                    t=4s                                                    t = 5.3 s                                                t = 10 s
+
+         y                                                     y                                                         y
+
+
+              x                                                     x                                                          x
+
+
+
+
+                                                                                                                                                                             Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+  B                   t = 3.5 s                                                 t=6s                                                    t = 10 s
+
+         y                                                     y                                                         y
+
+
+              x                                                     x                                                          x
+
+
+
+
+  C                   t = 4.4 s                                                t = 6.5 s                                                t = 10 s
+
+  D                    Reference            Tape core      E                                    Corner bracket         F                                USB converter
+         250                                 (5.6 g)              250                              (12.8 g)                   250                         (17.5 g)
+x (mm)
+
+
+
+
+                                                         x (mm)
+
+
+
+
+                                                                                                                     x (mm)
+         240                                                      240                                                         240
+
+         230                                                      230                                                         230
+                  0         5          10           15                   0            5           10            15                  0          5              10      15
+             40                                                    40                                                          40
+y (mm)
+
+
+
+
+                                                         y (mm)
+
+
+
+
+                                                                                                                     y (mm)
+
+
+
+
+             0                                                      0                                                           0
+
+         -40                                                       -40                                                        -40
+                  0         5          10           15                   0            5           10            15                  0          5              10      15
+             15                                                    15                                                          15
+ψ (°)
+
+
+
+
+                                                         ψ (°)
+
+
+
+
+                                                                                                                     ψ (°)
+
+
+
+
+             0                                                      0                                                           0
+
+         -15                                                       -15                                                        -15
+                  0         5          10           15                   0            5           10            15                  0          5              10      15
+                                Time (s)                                                   Time (s)                                                Time (s)
+ Fig. 12. Adding disturbances by hanging payloads while maintaining the desired pose stationary. Sequential images show hanging (A) a tape core, (B) a corner bracket, and
+ (C) a USB converter. (D to F) Time plots of end-effector position and attitude under different payloads.
+
+
+
+
+      Table 4. Results for adding disturbances in a stationary pose
+
+                                                                                                      End-effector MaxAE
+      Payload                                                       x/mm                                     y/mm                                    𝜓 /(°)
+      Tape core (5.6 g)                                                  1.6                                 16.0                                    4.8
+      Corner bracket (12.8 g)                                            3.4                                 30.5                                     7.4
+      USB converter (17.5 g)                                             5.3                                 38.9                                    12.5
+
+
+
+
+ Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                            12
+ y                                                           y     t = 7.1 s                                                  y
+                                                                                                                                                t = 10 s
+
+                x               t=0s                                    x           t = 8.7 s                                     x
+
+
+
+
+ A                  5 cm                                                    5 cm                                                       5 cm
+
+ y                                                           y                                                                y
+
+
+
+                x          t = 20 s                                     x                                                         x               t = 40 s
+
+                                                                                   t = 30 s
+
+
+
+
+                                                                                                                                                                              Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+                    5 cm                                                    5 cm                                                       5 cm
+
+ B         65                         C          265                                                    D               10                               Reference
+                                                                                                                                                         Measurement
+                                        x (mm)
+
+
+
+
+                                                                                                         x error (mm)
+                                                 240
+                                                                                                                         0
+                                                 215
+                                                       0      10         20          30            40
+                                                 65
+                                                                                                                        -10
+  y (mm)
+
+
+
+
+                                        y (mm)
+
+
+
+
+                                                                                                                              0   10            20           30        40
+            0                                     0
+                                                                                                                        70
+                                                 -65                                                     y error (mm)
+                                                       0      10         20          30            40
+                                                 15
+                                                                                                                         0
+                                        ψ (°)
+
+
+
+
+                                                  0
+
+           -65                                   -15                                                                    -70
+             215     240       265                     0      10         20          30            40                         0   10            20           30        40
+                    x (mm)                                            Time (s)                                                                Time (s)
+Fig. 13. Adding disturbance during end-effector trajectory tracking. (A) Sequence of images illustrating the robot executing the trajectory under an unexpected disturbance
+from a USB converter. (B) Position trajectories. (C) Time plots of position and attitude. (D) Position tracking errors.
+
+
+
+
+                                                                                        and 1.0° in the x, y, and 𝜓 directions, respectively, which are
+     Table 5. Results for adding disturbance (a USB converter, 17.5 g)                  summarized in Table 5.
+     during trajectory tracking                                                            The experimental results demonstrate the ability of the con-
+                                                                                        tinuum robot to handle unexpected disturbances, showcasing
+                                           End-effector error                           the versatility and robustness of the proposed method.
+     Metric                     x/mm                       y/mm       𝜓 /(°)
+     RMSE                         1.7                       7.6        1.9
+                                                                                        Conclusion
+     MAE                          1.2                      3.0         1.0              In this work, a hybrid model-based and data-driven method is
+     MaxAE                        7.7                      66.8        14.1             proposed for controlling a continuum robot. By utilizing real-
+                                                                                        time actuation inputs and end-effector pose measurements,
+                                                                                        the model-based Jacobian of the robot is updated online
+                                                                                        through a Kalman filter to account for modeling inaccuracies.
+                                                                                        This approach eliminates the need for offline dataset collection
+At t = 8 s, the USB converter was suspended, causing the                                and training. Experiments conducted on a planar continuum
+robot to temporarily deviate from the reference trajectory.                             manipulator demonstrate the effectiveness of the proposed
+The robot recovered quickly and returned to follow the tra-                             method in improving tracking accuracy for both position and
+jectory stably as demonstrated in Fig. 13B to D, with MaxAEs                            attitude. Additionally, the effects of various model parameters
+of the end-effector in the x, y, and 𝜓 directions as 7.7 mm,                            are analyzed through comparative experiments. The robustness
+66.8 mm, and 14.1°, respectively. After the payload was                                 of the proposed method against external disturbances is also
+applied (t = 8 to 40 s), the trajectory tracking RMSEs are                              validated. However, due to the neglect of robot dynamics,
+1.7 mm, 7.6 mm, and 1.9°, and the MAEs are 1.2 mm, 3.0 mm,                              the proposed method is currently limited to low operation
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                                                              13
+velocities. Future work will focus on extending the method to       10. Li X, Xiong Q, Sui D, Zhang Q, Li H, Wang Z, Zheng T,
+incorporate the dynamic effects of continuum robots. Further­           Wang H, Zhao J, Zhu Y. Disturbance-adaptive tapered soft
+more, we aim to advance this hybrid model-based and data-               manipulator with precise motion controller for enhanced task
+driven framework to enhance the accuracy and efficiency of              performance. IEEE Trans Robot. 2024;40:3581–3601.
+onboard state estimation for continuum robots.                      11. Guan Q, Stella F, Della Santina C, Leng J, Hughes J. Trimmed
+                                                                        helicoids: An architectured soft structure yielding soft
+Acknowledgments                                                         robots with high precision, large workspace, and compliant
+                                                                        interactions. npj Robot. 2023;1:4.
+Funding: This work was supported in part by grants from the         12. Della Santina C, Duriez C, Rus D. Model-based control of soft
+Research Grants Council of the Hong Kong Special Administrative         robots: A survey of the state of the art and open challenges.
+Region, China (nos. CityU C1134-20G and CityU 11211421).                IEEE Control Syst Mag. 2023;43(3):30–65.
+Author contributions: Y.Z. conceived the study, designed and        13. Russo M, Sadati SMH, Dong X, Mohammad A, Walker ID,
+fabricated the prototypes, and designed the experiments. Y.Z. and       Bergeles C, Xu K, Axinte DA. Continuum robots: An overview.
+J.X. performed the experiments and analyzed the results. H.M.           Adv Intell Syst. 2023;5:2200367.
+and C.Z. contributed to the fabrication of the prototypes. Y.Z.,    14. Huang S, Meng D, Wang X, Liang B, Lu W. A 3D static
+J.X., and D.S. wrote and revised the manuscripts with advice from       modeling method and experimental verification of continuum
+all authors. D.S. provided funding and supervised the research.
+
+
+
+
+                                                                                                                                          Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+                                                                        robots based on pseudo-rigid body theory. Paper presented at:
+Competing interests:﻿ The authors declare that they have no             2019 IEEE/RSJ International Conference on Intelligent Robots
+competing interests.                                                    and Systems (IROS); 2019 Nov 3–8; Macau, China.
+                                                                    15. Della Santina C, Katzschmann RK, Bicchi A, Rus D. Model-
+Data Availability                                                       based dynamic feedback control of a planar soft robot:
+                                                                        Trajectory tracking and interaction with the environment. Int J
+The data that support the findings of this study are available          Robot Res. 2020;39(4):490–513.
+from the corresponding author upon reasonable request.              16. Della Santina C, Bicchi A, Rus D. On an improved state
+                                                                        parametrization for soft robots with piecewise constant
+Supplementary Materials                                                 curvature and its use in model based control. IEEE Robot.
+                                                                        Autom Lett. 2020;5(2):1001–1008.
+Figs. S1 to S3                                                      17. Rao P, Peyron Q, Burgner-Kahrs J. Shape representation
+Movie S1                                                                and modeling of tendon-driven continuum robots using
+                                                                        Euler arc splines. IEEE Robot. Autom Lett. 2022;7(3):
+References                                                              8114–8121.
+                                                                    18. Stella F, Guan Q, Della Santina C, Hughes J. Piecewise affine
+ 1. Wang Z, Freris NM, Wei X. Spirobs: Logarithmic spiral-              curvature model: A reduced-order model for soft robot-
+    shaped robots for versatile grasping across scales. Device.         environment interaction beyond PCC. Paper presented
+    2024;3(4):Article 100646.                                           at: 2023 IEEE International Conference on Soft Robotics
+ 2. Mao L, Yang P, Tian C, Shen X, Wang F, Zhang H, Meng X,             (RoboSoft); 2023 Apr 3–7; Singapore, Singapore.
+    Xie H. Magnetic steering continuum robot for transluminal       19. Della Santina C, Rus D. Control oriented modeling of soft
+    procedures with programmable shape and functionalities. Nat         robots: The polynomial curvature case. IEEE Robot. Autom.
+    Commun. 2024;15(1):3759.                                            Lett. 2019;5(2):290–298.
+ 3. Li Z, Xu Q. Multi-section magnetic soft robot with multirobot   20. Lilge S, Burgner-Kahrs J. Kinetostatic modeling of tendon-
+    navigation system for vasculature intervention. Cyborg Bionic       driven parallel continuum robots. IEEE Trans Robot.
+    Syst. 2024;5:0188.                                                  2023;39(2):1563–1579.
+ 4. Fang G, Chow MCK, Ho JDL, He Z, Wang K, Ng TC,                  21. Till J, Aloi V, Rucker C. Real-time dynamics of soft and
+    Tsoi JKH, Chan P-L, Chang H-C, Chan DT-M, et al. Soft               continuum robots based on Cosserat rod models. Int J Robot
+    robotic manipulator for intraoperative MRI-guided transoral         Res. 2019;38(6):723–746.
+    laser microsurgery. Sci Robot. 2021;6(57):eabg5575.             22. Chaillou P, Shi J, Kruszewski A, Fournier I, Wurdemann HA,
+ 5. Yang Z, Yang L, Sun Y, Chen X. A novel contact-aided                Duriez C. Reduced finite element modelling and closed-loop
+    continuum robotic system: Design, modeling, and validation.         control of pneumatic-driven soft continuum robots. Paper
+    IEEE Trans Robot. 2024;40:3024–3043.                                presented at: 2023 IEEE International Conference on Soft
+ 6. Cao X, Yu J, Tang S, Sui J, Pei X. Detection and removal of         Robotics (RoboSoft); 2023 Apr 3–7; Singapore, Singapore.
+    excess materials in aircraft wings using continuum robot end-   23. Wu K, Zheng G, Zhang J. Fem-based trajectory
+    effectors. Front Mech Eng. 2024;19:36.                              tracking control of a soft trunk robot. Robot Auton Syst.
+ 7. Hawkes EW, Blumenschein LH, Greer JD, Okamura AM. A                 2022;150:Article 103961.
+    soft robot that navigates its environment through growth. Sci   24. Tao J, Li T, Hu Q, Dong E. Soft origami continuum robot
+    Robot. 2017;2(8):eaan3028.                                          capable of precise motion through machine learning. IEEE
+ 8. Carton M, Kowalewski JF, Guo J, Alpert JF, Garg A, Revier D,        Robot. Autom. Lett. 2024;10(2):1034–1041.
+    Lipton JI. Bridging hard and soft: Mechanical metamaterials     25. Haggerty DA, Banks MJ, Kamenar E, Cao AB, Curtis PC,
+    enable rigid torque transmission in soft robots. Sci Robot.         Mezić I, Hawkes EW. Control of soft robots with inertial
+    2025;10(100):eads0548.                                              dynamics. Sci. Robot. 2023;8(81):eadd6864.
+ 9. Peng R, Wang Y, Lu M, Lu P. A dexterous and compliant           26. Bruder D, Fu X, Gillespie RB, Remy CD, Vasudevan R. Data-
+    aerial continuum manipulator for cluttered and constrained          driven control of soft robots using Koopman operator theory.
+    environments. Nat Commun. 2025;16(1):889.                           IEEE Trans Robot. 2020;37(3):948–961.
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                          14
+27. Lu Y, Chen W, Lu B, Zhou J, Chen Z, Dou Q, Liu Y-H.             34. Huang X, Rong Y, Gu G. High-precision dynamic control of soft
+    Adaptive online learning and robust 3-D shape servoing of           robots with the physics-learning hybrid modeling approach.
+    continuum and soft robots in unstructured environments. Soft        IEEE ASME Trans Mechatron. 2024;30(3):1658–1669.
+    Robot. 2024;11(2):320–337.                                      35. Li H, Xun L, Zheng G. Global control of soft manipulator
+28. Alambeigi F, Wang Z, Hegeman R, Liu Y-H, Armand M.                  by unifying Cosserat and neural network. IEEE Trans Ind
+    Autonomous data-driven manipulation of unknown                      Electron. 2023;71(9):10944–10954.
+    anisotropic deformable tissues using unmodelled                 36. Zhang G, Du F, Zhang X, Wu K, Zheng G, Li Y, Song R.
+    continuum manipulators. IEEE Robot Autom Lett.                      Continuum robots: A real-time model-based data-
+    2018;4(2):254–261.                                                  driven nonlinear controller. IEEE Trans Ind Electron.
+29. Alambeigi F, Wang Z, Hegeman R, Liu Y-H, Armand M.                  2024;71(12):16176–16186.
+    A robust data-driven approach for online learning and           37. Bouyom Boutchouang AH, Melingui A, Mvogo Ahanda JJB,
+    manipulation of unmodeled 3-D heterogeneous compliant               Lakhal O, Biya Motto F, Merzouki R. Forward kinematic
+    objects. IEEE Robot Autom Lett. 2018;3(4):4140–4147.                modeling of conical-shaped continuum manipulators.
+30. Mo H, Li X, Ouyang B, Fang G, Jia Y. Task autonomy of a             Robotica. 2021;39(10):1760–1778.
+    flexible endoscopic system for laser-assisted surgery. Cyborg   38. Thamo B, Alambeigi F, Dhaliwal K, Khadem M. A hybrid dual
+    Bionic Syst. 2022;2022:9759504.                                     jacobian approach for autonomous control of concentric tube
+
+
+
+
+                                                                                                                                              Downloaded from https://spj.science.org at Case Western Reserve University on November 19, 2025
+31. Li M, Kang R, Branson DT, Dai JS. Model-free control for            robots in unknown constrained environments. Paper presented
+    continuum robots based on an adaptive Kalman filter. IEEE           at: 2021 IEEE/RSJ International Conference on Intelligent Robots
+    ASME Trans Mechatron. 2017;23(1):286–297.                           and Systems (IROS); 2021 Sep 27–Oct 1; Prague, Czech Republic.
+32. Gao Y, Chen Z, Zhong F, Li X, Liu Y-H. Data-driven modeling     39. Shen W, Yang G, Zheng T, Wang Y, Yang K, Fang Z. An accuracy
+    and high-precision tracking control of a soft continuum             enhancement method for a cable-driven continuum robot with a
+    manipulator: Enabling robotic sorting of multiwire cables.          flexible backbone. IEEE Access. 2020;8:37474–37481.
+    Adv Intell Syst. 2024;6(10):2300827.                            40. Reinhart RF, Shareef Z, Steil JJ. Hybrid analytical and data-driven
+33. Mo H, Wei R, Kong X, Zhai Y, Liu Y, Sun D. Data-efficient           modeling for feed-forward robot control. Sensors. 2017;17(2):311.
+    learning control of continuum robots in constrained             41. Faragher R. Understanding the basis of the Kalman filter via
+    environments. IEEE Trans Autom Sci Eng. 2024;22:                    a simple and intuitive derivation [lecture notes]. IEEE Signal
+    984–995.                                                            Process Mag. 2012;29(5):128–132.
+
+
+
+
+Zhai et al. 2025 | https://doi.org/10.34133/cbsystems.0339                                                                              15
+

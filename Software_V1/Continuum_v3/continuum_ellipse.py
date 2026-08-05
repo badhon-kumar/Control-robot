@@ -29,6 +29,204 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Tuple, Callable
 import numpy as np
 
+try:
+    from gcode_trajectory import GCodeProgram, load_gcode_file
+    HAS_GCODE_HELPER = True
+except ImportError:
+    HAS_GCODE_HELPER = False
+
+    @dataclass
+    class GCodePoint:
+        t_s: float
+        pose: np.ndarray
+
+    @dataclass
+    class GCodeProgram:
+        points: List[GCodePoint]
+        source: str = ""
+
+        @property
+        def duration_s(self) -> float:
+            return float(self.points[-1].t_s) if self.points else 0.0
+
+        def pose_at(self, t_s: float) -> np.ndarray:
+            if not self.points:
+                raise ValueError("G-code program has no trajectory points")
+            if t_s <= self.points[0].t_s:
+                return self.points[0].pose.copy()
+            if t_s >= self.points[-1].t_s:
+                return self.points[-1].pose.copy()
+            for i in range(len(self.points) - 1):
+                a = self.points[i]
+                b = self.points[i + 1]
+                if a.t_s <= t_s <= b.t_s:
+                    s = (t_s - a.t_s) / max(1e-9, b.t_s - a.t_s)
+                    pose = a.pose + s * (b.pose - a.pose)
+                    dpsi = (b.pose[2] - a.pose[2] + math.pi) % (2.0 * math.pi) - math.pi
+                    pose[2] = a.pose[2] + s * dpsi
+                    return pose
+            return self.points[-1].pose.copy()
+
+        def xy_points_mm(self) -> List[Tuple[float, float]]:
+            out: List[Tuple[float, float]] = []
+            for point in self.points:
+                xy = (float(point.pose[0] * 1000.0), float(point.pose[1] * 1000.0))
+                if not out or abs(out[-1][0] - xy[0]) > 1e-9 or abs(out[-1][1] - xy[1]) > 1e-9:
+                    out.append(xy)
+            return out
+
+    def _strip_gcode_comment(line: str) -> str:
+        import re
+        line = re.sub(r"\([^)]*\)", "", line)
+        return line.split(";", 1)[0].strip()
+
+    def _parse_gcode_words(line: str) -> dict:
+        import re
+        words = {}
+        for key, value in re.findall(r"([A-Za-z]+)\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", line):
+            words[key.upper()] = float(value)
+        return words
+
+    def load_gcode_file(path: str) -> GCodeProgram:
+        pose = np.array([0.270, 0.0, 0.0], dtype=float)
+        absolute = True
+        unit_scale_mm = 1.0
+        feed_mm_min = 600.0
+        rapid_feed_mm_min = 1200.0
+        active_motion = "G1"
+        t_s = 0.0
+        points = [GCodePoint(t_s=0.0, pose=pose.copy())]
+
+        def append_linear(target: np.ndarray, feed: float, trace_first_rapid: bool = True):
+            nonlocal pose, t_s, points
+            if not trace_first_rapid and len(points) == 1 and abs(points[0].t_s) < 1e-12:
+                pose = target
+                points[0] = GCodePoint(t_s=0.0, pose=pose.copy())
+                return
+            dist_mm = float(np.linalg.norm((target[:2] - pose[:2]) * 1000.0))
+            angle_mm = abs(target[2] - pose[2]) * 20.0
+            path_mm = max(dist_mm, angle_mm, 1e-6)
+            t_s += max(path_mm / (feed / 60.0), 0.001)
+            pose = target
+            points.append(GCodePoint(t_s=t_s, pose=pose.copy()))
+
+        def append_arc(target: np.ndarray, words: dict, clockwise: bool):
+            nonlocal pose, t_s, points
+            if "I" not in words or "J" not in words:
+                raise ValueError("G2/G3 arc requires I and J center offsets")
+
+            center = np.array([
+                pose[0] + words["I"] * unit_scale_mm / 1000.0,
+                pose[1] + words["J"] * unit_scale_mm / 1000.0,
+            ])
+            start_vec = pose[:2] - center
+            end_vec = target[:2] - center
+            radius = float(np.linalg.norm(start_vec))
+            if radius < 1e-9:
+                raise ValueError("G2/G3 arc radius is zero")
+
+            start_ang = math.atan2(start_vec[1], start_vec[0])
+            end_ang = math.atan2(end_vec[1], end_vec[0])
+            if np.linalg.norm(end_vec) < 1e-9:
+                end_ang = start_ang
+
+            if clockwise:
+                sweep = end_ang - start_ang
+                while sweep >= 0.0:
+                    sweep -= 2.0 * math.pi
+            else:
+                sweep = end_ang - start_ang
+                while sweep <= 0.0:
+                    sweep += 2.0 * math.pi
+
+            if np.linalg.norm(target[:2] - pose[:2]) < 1e-9:
+                sweep = -2.0 * math.pi if clockwise else 2.0 * math.pi
+
+            arc_len_mm = abs(sweep) * radius * 1000.0
+            n_seg = max(8, min(240, int(math.ceil(arc_len_mm / 2.0))))
+            total_dt = max(arc_len_mm / (feed_mm_min / 60.0), 0.001)
+            start_pose = pose.copy()
+            dpsi = (target[2] - start_pose[2] + math.pi) % (2.0 * math.pi) - math.pi
+
+            for k in range(1, n_seg + 1):
+                s = k / n_seg
+                ang = start_ang + sweep * s
+                p = np.array([
+                    center[0] + radius * math.cos(ang),
+                    center[1] + radius * math.sin(ang),
+                    start_pose[2] + dpsi * s,
+                ])
+                t_s += total_dt / n_seg
+                points.append(GCodePoint(t_s=t_s, pose=p.copy()))
+            pose = target
+
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            for row_num, raw in enumerate(handle, start=1):
+                words = _parse_gcode_words(_strip_gcode_comment(raw))
+                if not words:
+                    continue
+                if "G" in words:
+                    g = int(round(words["G"]))
+                    if g in (0, 1, 2, 3):
+                        active_motion = f"G{g}"
+                    elif g == 4:
+                        dwell = float(words.get("P", 0.0))
+                        if dwell > 100.0:
+                            dwell /= 1000.0
+                        if dwell > 0.0:
+                            t_s += dwell
+                            points.append(GCodePoint(t_s=t_s, pose=pose.copy()))
+                        continue
+                    elif g == 20:
+                        unit_scale_mm = 25.4
+                        continue
+                    elif g == 21:
+                        unit_scale_mm = 1.0
+                        continue
+                    elif g == 90:
+                        absolute = True
+                        continue
+                    elif g == 91:
+                        absolute = False
+                        continue
+                    else:
+                        raise ValueError(f"Unsupported G-code G{g} on line {row_num}")
+                if "F" in words:
+                    feed_mm_min = max(1e-6, float(words["F"]) * unit_scale_mm)
+                if not any(k in words for k in ("X", "Y", "A", "P", "PSI", "I", "J")):
+                    continue
+
+                target = pose.copy()
+                if "X" in words:
+                    x_m = words["X"] * unit_scale_mm / 1000.0
+                    target[0] = x_m if absolute else target[0] + x_m
+                if "Y" in words:
+                    y_m = words["Y"] * unit_scale_mm / 1000.0
+                    target[1] = y_m if absolute else target[1] + y_m
+                psi_key = "PSI" if "PSI" in words else ("A" if "A" in words else ("P" if "P" in words else None))
+                if psi_key is not None:
+                    psi_rad = math.radians(float(words[psi_key]))
+                    target[2] = psi_rad if absolute else target[2] + psi_rad
+
+                if active_motion == "G2":
+                    append_arc(target, words, clockwise=True)
+                elif active_motion == "G3":
+                    append_arc(target, words, clockwise=False)
+                else:
+                    motion_feed = rapid_feed_mm_min if active_motion == "G0" else feed_mm_min
+                    append_linear(target, motion_feed, trace_first_rapid=(active_motion != "G0"))
+
+        if len(points) < 2:
+            raise ValueError("G-code did not contain supported motion commands")
+        return GCodeProgram(points=points, source=path)
+
+try:
+    from pose_feedback import UdpPoseFeedbackReceiver
+    HAS_POSE_FEEDBACK = True
+except ImportError:
+    UdpPoseFeedbackReceiver = None
+    HAS_POSE_FEEDBACK = False
+
 # ── Optional hardware import ──────────────────────────────────────────────────
 try:
     import serial
@@ -714,6 +912,7 @@ def make_trajectory(name: str, T: float = 40.0) -> Callable[[float], np.ndarray]
 
 TRAJECTORY_NAMES = [
     "Traj 1 — Ellipse (pos only)",
+    "G-code path",
 ]
 
 
@@ -2172,12 +2371,15 @@ class TrajectoryControlPanel(tk.Frame):
     PLOT_H = 320
     ERR_H  = 120
 
-    def __init__(self, parent, get_robot, set_disps_fn, log_fn, simulated=True, **kw):
+    def __init__(self, parent, get_robot, set_disps_fn, log_fn, simulated=True,
+                 get_pose_sample_fn=None, **kw):
         super().__init__(parent, bg=BG, **kw)
         self._get_robot   = get_robot
         self._set_disps   = set_disps_fn   # fn(disps_mm[6], speeds_mm/s[6])
         self._log         = log_fn
         self._simulated   = simulated
+        self._get_pose_sample = get_pose_sample_fn
+        self._last_pose_warn_t = 0.0
 
         # Controller state
         self._controller  : Optional[KalmanJacobianController] = None
@@ -2218,6 +2420,10 @@ class TrajectoryControlPanel(tk.Frame):
         self._speed_var = tk.StringVar(value="40.0")   # motor speed mm/s during tracking
         self._cycles_var= tk.StringVar(value="1")
         self._atthold_var= tk.BooleanVar(value=False)
+        self._gcode_path_var = tk.StringVar(value="sample_square_path.gcode")
+        self._gcode_status_var = tk.StringVar(value="No G-code loaded")
+        self._gcode_program: Optional[GCodeProgram] = None
+        self._gcode_combo = None
         self._start_buttons = []
         self._stop_buttons  = []
 
@@ -2245,25 +2451,54 @@ class TrajectoryControlPanel(tk.Frame):
         self._stop_buttons.append(self.btn_stop)
 
         # ── Main layout: resizable control pane | resizable plot pane ────────
-        main = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=BG, sashwidth=7,
-                              sashrelief=tk.RAISED, bd=0, opaqueresize=True)
+        main = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=BG, sashwidth=9,
+                              sashrelief=tk.RAISED, bd=0, opaqueresize=True,
+                              showhandle=True, handlesize=12, sashpad=2)
         main.pack(fill="both", expand=True, padx=4, pady=4)
 
         # LEFT — configuration
-        lf = tk.Frame(main, bg=BG, width=380)
+        lf = tk.Frame(main, bg=BG, width=340)
         lf.pack_propagate(False)
-        main.add(lf, minsize=380, stretch="always")
+        main.add(lf, minsize=240, stretch="always")
+
+        left_canvas = tk.Canvas(lf, bg=BG, highlightthickness=0)
+        left_scroll = ttk.Scrollbar(lf, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+        left_scroll.pack(side="right", fill="y")
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left_panel = tk.Frame(left_canvas, bg=BG)
+        left_window = left_canvas.create_window((0, 0), window=left_panel, anchor="nw")
+
+        def _sync_left_scroll(_event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
+
+        def _fit_left_width(event):
+            left_canvas.itemconfigure(left_window, width=event.width)
+
+        def _scroll_left(event):
+            left_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        left_panel.bind("<Configure>", _sync_left_scroll)
+        left_canvas.bind("<Configure>", _fit_left_width)
+        left_canvas.bind("<MouseWheel>", _scroll_left)
+        left_panel.bind("<MouseWheel>", _scroll_left)
+        left_canvas.bind("<Enter>", lambda _e: left_canvas.bind_all("<MouseWheel>", _scroll_left))
+        left_canvas.bind("<Leave>", lambda _e: left_canvas.unbind_all("<MouseWheel>"))
+        left_panel.bind("<Enter>", lambda _e: left_canvas.bind_all("<MouseWheel>", _scroll_left))
+        left_panel.bind("<Leave>", lambda _e: left_canvas.unbind_all("<MouseWheel>"))
 
         # Trajectory selection
-        tc = tk.LabelFrame(lf, text="  Trajectory  ", font=(FNT,11,"bold"),
+        tc = tk.LabelFrame(left_panel, text="  Trajectory  ", font=(FNT,11,"bold"),
                            fg=BLUE, bg=CARD, relief="flat",
                            highlightbackground=BORDER, highlightthickness=1)
         tc.pack(fill="x", pady=(0,4), padx=2)
+        tc.grid_columnconfigure(1, weight=1)
         tk.Label(tc, text="Type:", font=(FNT,12), fg=MUTED, bg=CARD).grid(
             row=0, column=0, sticky="w", padx=8, pady=5)
         ttk.Combobox(tc, textvariable=self._traj_var,
                      values=TRAJECTORY_NAMES, state="readonly",
-                     font=(FNT,12), width=28).grid(row=0, column=1, padx=4, pady=5)
+                     font=(FNT,12), width=20).grid(row=0, column=1, sticky="ew", padx=4, pady=5)
         for r,(lbl,var) in enumerate([("Period T (s):",self._T_var),
                                        ("Cycles:",self._cycles_var),
                                        ("Motor speed (mm/s):",self._speed_var),
@@ -2275,49 +2510,45 @@ class TrajectoryControlPanel(tk.Frame):
                      highlightbackground=BORDER, highlightthickness=1).grid(
                 row=r, column=1, sticky="w", padx=4, pady=4)
 
-        # Primary controls stay near the top; no scrolling required.
-        bf = tk.Frame(lf, bg=BG)
+        g_row = 5
+        tk.Label(tc, text="G-code file:", font=(FNT,12), fg=MUTED, bg=CARD).grid(
+            row=g_row, column=0, sticky="w", padx=8, pady=4)
+        self._gcode_combo = ttk.Combobox(tc, textvariable=self._gcode_path_var,
+                                         values=self._available_gcode_files(),
+                                         font=(FNT,10), width=18)
+        self._gcode_combo.grid(row=g_row, column=1, sticky="ew", padx=4, pady=4)
+        self._gcode_combo.bind("<<ComboboxSelected>>", lambda _e: self._load_gcode())
+        gf = tk.Frame(tc, bg=CARD)
+        gf.grid(row=g_row+1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0,4))
+        tk.Button(gf, text="Browse File", font=(FNT,9,"bold"), bg=PANEL, fg=TEXT,
+                  relief="flat", command=self._browse_gcode).pack(fill="x", pady=(0,3))
+        tk.Button(gf, text="Refresh", font=(FNT,9,"bold"), bg=PANEL, fg=TEXT,
+                  relief="flat", command=self._refresh_gcode_files).pack(fill="x")
+        tk.Button(tc, text="Load G-code", font=(FNT,10,"bold"), bg=BLUE, fg=BG,
+                  relief="flat", command=self._load_gcode).grid(
+            row=g_row+2, column=0, columnspan=2, sticky="ew", padx=8, pady=(0,4))
+        tk.Label(tc, textvariable=self._gcode_status_var, font=(FNT,9), fg=MUTED, bg=CARD,
+                 wraplength=250, justify="left").grid(
+            row=g_row+3, column=0, columnspan=2, sticky="w", padx=8, pady=(0,5))
+
+        # Primary controls are part of the same left-column scroll area.
+        bf = tk.Frame(left_panel, bg=BG)
         bf.pack(fill="x", pady=(6, 6), padx=2)
         btn_start_big = tk.Button(bf, text="▶   START TRACKING", font=(FNT,15,"bold"),
                                   bg=GREEN, fg=BG, relief="flat", cursor="hand2",
                                   padx=20, pady=12, command=self._start)
-        btn_start_big.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        btn_start_big.pack(fill="x", pady=(0, 4))
         self._start_buttons.append(btn_start_big)
         btn_stop_big = tk.Button(bf, text="■   STOP", font=(FNT,15,"bold"),
                                  bg=RED, fg=BG, relief="flat", cursor="hand2",
                                  padx=20, pady=12, command=self._stop, state="disabled")
-        btn_stop_big.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        btn_stop_big.pack(fill="x")
         self._stop_buttons.append(btn_stop_big)
-        tk.Button(lf, text="↺  RESET PLOTS", font=(FNT,12,"bold"),
+        tk.Button(left_panel, text="↺  RESET PLOTS", font=(FNT,12,"bold"),
                   bg=PANEL, fg=MUTED, relief="flat", cursor="hand2",
                   padx=14, pady=8, command=self._reset).pack(fill="x", pady=(0, 6), padx=2)
 
-        options_wrap = tk.Frame(lf, bg=BG)
-        options_wrap.pack(fill="both", expand=True)
-        opt_canvas = tk.Canvas(options_wrap, bg=BG, highlightthickness=0)
-        opt_scroll = ttk.Scrollbar(options_wrap, orient="vertical", command=opt_canvas.yview)
-        opt_canvas.configure(yscrollcommand=opt_scroll.set)
-        opt_scroll.pack(side="right", fill="y")
-        opt_canvas.pack(side="left", fill="both", expand=True)
-        opt_panel = tk.Frame(opt_canvas, bg=BG)
-        opt_window = opt_canvas.create_window((0, 0), window=opt_panel, anchor="nw")
-
-        def _sync_options_scroll(_event=None):
-            opt_canvas.configure(scrollregion=opt_canvas.bbox("all"))
-
-        def _fit_options_width(event):
-            opt_canvas.itemconfigure(opt_window, width=event.width)
-
-        def _scroll_options(event):
-            opt_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            return "break"
-
-        opt_panel.bind("<Configure>", _sync_options_scroll)
-        opt_canvas.bind("<Configure>", _fit_options_width)
-        opt_canvas.bind("<MouseWheel>", _scroll_options)
-        opt_panel.bind("<MouseWheel>", _scroll_options)
-        opt_canvas.bind("<Enter>", lambda _e: opt_canvas.bind_all("<MouseWheel>", _scroll_options))
-        opt_canvas.bind("<Leave>", lambda _e: opt_canvas.unbind_all("<MouseWheel>"))
+        opt_panel = left_panel
 
         # (attitude held at ψ=0 for ellipse trajectory)
 
@@ -2458,7 +2689,7 @@ class TrajectoryControlPanel(tk.Frame):
                   bg=PANEL, fg=TEXT, relief="flat", cursor="hand2",
                   padx=12, pady=10, command=self._print_summary).pack(side="left", fill="x", expand=True)
         rf = tk.Frame(main, bg=BG)
-        main.add(rf, minsize=250, stretch="always")
+        main.add(rf, minsize=220, stretch="always")
 
         plot_pane = tk.PanedWindow(rf, orient=tk.VERTICAL, bg=BG, sashwidth=7,
                                    sashrelief=tk.RAISED, bd=0, opaqueresize=True)
@@ -2492,6 +2723,9 @@ class TrajectoryControlPanel(tk.Frame):
         self._status_lbl = tk.Label(rf, text="Ready. Press START to begin ellipse tracking.",
                                     font=(FNT,11), fg=MUTED, bg=PANEL)
         self._status_lbl.pack(fill="x")
+        self._feedback_lbl = tk.Label(rf, text="Feedback: model pose",
+                                      font=(FNT,10), fg=MUTED, bg=PANEL)
+        self._feedback_lbl.pack(fill="x")
 
     # ── Parameter helpers ─────────────────────────────────────────────────────
 
@@ -2523,6 +2757,69 @@ class TrajectoryControlPanel(tk.Frame):
             release_gain=self._get_triple(self._mpcc_release_var, (1.0, 1.0, 1.0)),
         )
 
+    def _is_gcode_mode(self) -> bool:
+        return "g-code" in self._traj_var.get().lower()
+
+    def _available_gcode_files(self) -> List[str]:
+        folder = os.path.dirname(__file__)
+        names = []
+        for name in os.listdir(folder):
+            if name.lower().endswith((".gcode", ".nc", ".tap")):
+                names.append(name)
+        return sorted(names)
+
+    def _refresh_gcode_files(self):
+        files = self._available_gcode_files()
+        if self._gcode_combo is not None:
+            self._gcode_combo.configure(values=files)
+        if files and not self._gcode_path_var.get().strip():
+            self._gcode_path_var.set(files[0])
+        self._gcode_status_var.set(f"Found {len(files)} G-code file(s) in Continuum_v3.")
+
+    def _browse_gcode(self):
+        path = filedialog.askopenfilename(
+            title="Open G-code file",
+            initialdir=os.path.dirname(__file__),
+            filetypes=[("G-code files", "*.gcode *.nc *.tap *.txt"), ("All files", "*.*")]
+        )
+        if path:
+            self._gcode_path_var.set(path)
+            self._load_gcode()
+
+    def _load_gcode(self) -> bool:
+        path = self._gcode_path_var.get().strip()
+        if not path:
+            self._gcode_status_var.set("Choose a G-code file first.")
+            return False
+        if not os.path.isabs(path):
+            path = os.path.join(os.path.dirname(__file__), path)
+        try:
+            program = load_gcode_file(path)
+        except Exception as exc:
+            self._gcode_program = None
+            self._gcode_status_var.set(f"G-code load failed: {exc}")
+            self._log(f"[GCODE] Load failed: {exc}", "err")
+            return False
+        self._gcode_program = program
+        parser_name = "helper" if HAS_GCODE_HELPER else "built-in"
+        self._gcode_status_var.set(
+            f"Loaded {os.path.basename(path)}: {len(program.points)} points, "
+            f"{program.duration_s:.1f} s ({parser_name} parser)"
+        )
+        self._log(f"[GCODE] Loaded {path} ({len(program.points)} points, {program.duration_s:.1f}s, {parser_name} parser)", "ok")
+        self._redraw_traj()
+        return True
+
+    def _make_reference_source(self, T: float):
+        if self._is_gcode_mode():
+            if self._gcode_program is None and not self._load_gcode():
+                raise RuntimeError("No valid G-code program loaded.")
+            program = self._gcode_program
+            if program is None:
+                raise RuntimeError("No valid G-code program loaded.")
+            return program.pose_at, max(program.duration_s, 0.001), "G-code"
+        return make_trajectory(self._traj_var.get(), T), T, "ellipse"
+
     def _set_run_controls(self, running: bool):
         start_state = "disabled" if running else "normal"
         stop_state = "normal" if running else "disabled"
@@ -2544,10 +2841,36 @@ class TrajectoryControlPanel(tk.Frame):
             modified_pcc = self._make_modified_pcc(),
         )
 
+    def _read_pose_for_control(self) -> Tuple[np.ndarray, str, str]:
+        """
+        Return (pose, source, status). In real mode, fresh UDP feedback is the
+        measured end-effector pose used by the Kalman Jacobian estimator.
+        """
+        if self._simulated:
+            return forward_kinematics(self._u_curr), "model", "simulation model pose"
+
+        if self._get_pose_sample is not None:
+            sample = self._get_pose_sample()
+            if sample is not None:
+                return sample.pose.copy(), "udp", (
+                    f"UDP pose age {sample.age_s * 1000:.0f} ms, "
+                    f"conf {sample.confidence:.2f}"
+                )
+
+        now = time.time()
+        if now - self._last_pose_warn_t > 1.0:
+            self._last_pose_warn_t = now
+            self._log("[POSE] No fresh UDP feedback; falling back to model pose.", "warn")
+        return forward_kinematics(self._u_curr), "fallback", "missing/stale UDP pose; using model fallback"
+
     # ── Start / Stop / Reset ─────────────────────────────────────────────────
 
     def _start(self):
         if self._running: return
+        if self._is_gcode_mode() and self._gcode_program is None:
+            if not self._load_gcode():
+                messagebox.showerror("G-code Load Failed", self._gcode_status_var.get())
+                return
         self._controller = self._make_controller()
         self._u_curr     = np.zeros(3)
         self._ref_hist.clear(); self._act_hist.clear()
@@ -2592,12 +2915,19 @@ class TrajectoryControlPanel(tk.Frame):
         dt       = 1.0 / rate
         T        = max(1.0, self._get_float(self._T_var, 40.0))
         cycles   = max(1, int(self._get_float(self._cycles_var, 1.0)))
-        traj_fn  = make_trajectory(self._traj_var.get(), T)
+        try:
+            traj_fn, base_dur, traj_kind = self._make_reference_source(T)
+        except Exception as exc:
+            self._log(f"[TRAJ] {exc}", "err")
+            self.after(0, lambda: messagebox.showerror("Trajectory Error", str(exc)))
+            self.after(0, self._set_run_controls, False)
+            self._running = False
+            return
         add_noise= bool(self._noise_var.get())
         noise_s  = self._get_float(self._noise_sig, 0.0005)
         att_hold = bool(self._atthold_var.get())
         mot_spd  = self._get_float(self._speed_var, 40.0)
-        total_dur= T * cycles
+        total_dur= base_dur * cycles
 
         t = 0.0
         step = 0
@@ -2606,20 +2936,15 @@ class TrajectoryControlPanel(tk.Frame):
             t_start = time.perf_counter()
 
             # ── 1. Reference pose ─────────────────────────────────────────────
-            pose_ref = traj_fn(t)
+            local_t = t % base_dur if cycles > 1 and base_dur > 0 else min(t, base_dur)
+            pose_ref = traj_fn(local_t)
             if att_hold:
                 pose_ref[2] = 0.0
 
-            # ── 2. Actual pose ────────────────────────────────────────────────
-            if self._simulated:
-                # Simulation: PCC model IS the plant + optional noise
-                pose_curr = forward_kinematics(self._u_curr)
-                if add_noise:
-                    pose_curr += np.random.normal(0, noise_s, 3)
-            else:
-                # Real hardware: read from forward kinematics of commanded state
-                # (Feedback from motor encoders could be used here if available)
-                pose_curr = forward_kinematics(self._u_curr)
+            # ── 2. Actual/measured pose ───────────────────────────────────────
+            pose_curr, pose_source, pose_status = self._read_pose_for_control()
+            if self._simulated and add_noise:
+                pose_curr += np.random.normal(0, noise_s, 3)
 
             # ── 3. Control update ─────────────────────────────────────────────
             u_next = self._controller.compute_control(
@@ -2659,6 +2984,9 @@ class TrajectoryControlPanel(tk.Frame):
 
             # Status bar
             if step % 20 == 0:
+                fb_fg = GREEN if pose_source == "udp" else (YELLOW if pose_source == "fallback" else MUTED)
+                self.after(0, self._feedback_lbl.config,
+                           {"text": f"Feedback: {pose_status}", "fg": fb_fg})
                 self.after(0, self._status_lbl.config,
                            {"text": f"t={t:.1f}s / {total_dur:.0f}s   "
                                     f"step {step}   "
@@ -2810,15 +3138,24 @@ class TrajectoryControlPanel(tk.Frame):
                 col = "#c8d8e8" if yv == 0 else "#e2e8f0"
                 cv.create_line(mg_l, gy, w-mg_r, gy, fill=col, width=lw)
 
-        # ── Ellipse bounding box — marks the reference ellipse extents ────────
-        # Ellipse: x = 240±20 = 220..260,  y = ±60
-        bx0, _ = to_px(220, 0); bx1, _ = to_px(260, 0)
-        _, by0  = to_px(0,  60); _, by1  = to_px(0, -60)
-        cv.create_rectangle(bx0, by0, bx1, by1,
-                            fill="#fafff8", outline="#81c784", width=1, dash=(4,3))
-        # Dimension labels placed safely inside the box
-        cv.create_text((bx0+bx1)//2, by0 + 8, text="reference ellipse  x:220–260 mm  y:±60 mm",
-                       fill="#4caf50", font=(FNT, 7), anchor="n")
+        if self._is_gcode_mode() and self._gcode_program is not None:
+            ref_xy = self._gcode_program.xy_points_mm()
+            xs = [p[0] for p in ref_xy]
+            ys = [p[1] for p in ref_xy]
+            bx0, by0 = to_px(min(xs), max(ys))
+            bx1, by1 = to_px(max(xs), min(ys))
+            cv.create_rectangle(bx0, by0, bx1, by1,
+                                fill="#fafff8", outline="#81c784", width=1, dash=(4,3))
+            cv.create_text((bx0+bx1)//2, by0 + 8, text="G-code reference path",
+                           fill="#4caf50", font=(FNT, 7), anchor="n")
+        else:
+            # Ellipse: x = 240±20 = 220..260,  y = ±60
+            bx0, _ = to_px(220, 0); bx1, _ = to_px(260, 0)
+            _, by0  = to_px(0,  60); _, by1  = to_px(0, -60)
+            cv.create_rectangle(bx0, by0, bx1, by1,
+                                fill="#fafff8", outline="#81c784", width=1, dash=(4,3))
+            cv.create_text((bx0+bx1)//2, by0 + 8, text="reference ellipse  x:220–260 mm  y:±60 mm",
+                           fill="#4caf50", font=(FNT, 7), anchor="n")
 
         # Mark the arm rest position (X=270, Y=0) with a small indicator
         rx0, ry0 = to_px(270, 0)
@@ -2858,16 +3195,25 @@ class TrajectoryControlPanel(tk.Frame):
         cv.create_text(ecx+3, ecy-4, text="centre\n(240, 0)",
                        fill=DIM, font=(FNT, 7), anchor="sw")
 
-        # ── Reference ellipse ─────────────────────────────────────────────────
-        T_val = max(1.0, self._get_float(self._T_var, 40.0))
-        ell_pts = []
-        for k in range(201):
-            t_ = k / 200 * T_val
-            xr_ = 240 + 20 * math.cos(2*math.pi*t_/T_val)
-            yr_ =  60 * math.sin(2*math.pi*t_/T_val)
-            ell_pts.append(to_px(xr_, yr_))
-        flat_ell = [v for p in ell_pts for v in p]
-        cv.create_line(*flat_ell, fill="#78909c", width=2, dash=(6,4), smooth=True)
+        # ── Reference path ────────────────────────────────────────────────────
+        if self._is_gcode_mode():
+            if self._gcode_program is not None and len(self._gcode_program.points) >= 2:
+                ref_pts = [to_px(x, y) for x, y in self._gcode_program.xy_points_mm()]
+                flat_ref = [v for p in ref_pts for v in p]
+                cv.create_line(*flat_ref, fill="#78909c", width=2, dash=(6,4), smooth=False)
+            else:
+                cv.create_text(w//2, mg_t + 20, text="Load a G-code file to show the reference path",
+                               fill=MUTED, font=(FNT, 9), anchor="n")
+        else:
+            T_val = max(1.0, self._get_float(self._T_var, 40.0))
+            ell_pts = []
+            for k in range(201):
+                t_ = k / 200 * T_val
+                xr_ = 240 + 20 * math.cos(2*math.pi*t_/T_val)
+                yr_ =  60 * math.sin(2*math.pi*t_/T_val)
+                ell_pts.append(to_px(xr_, yr_))
+            flat_ell = [v for p in ell_pts for v in p]
+            cv.create_line(*flat_ell, fill="#78909c", width=2, dash=(6,4), smooth=True)
 
         # ── Actual path ───────────────────────────────────────────────────────
         if len(self._act_hist) >= 2:
@@ -2955,7 +3301,8 @@ class TrajectoryControlPanel(tk.Frame):
 
 class ContinuumGUI(tk.Tk):
 
-    def __init__(self, simulated=True, port="COM3", baud=115200):
+    def __init__(self, simulated=True, port="COM3", baud=115200,
+                 use_pose_udp=True, pose_host="127.0.0.1", pose_port=5005):
         super().__init__()
         self.title("Continuum Manipulator  ·  Ellipse Trajectory Control  ·  Zhai et al. 2025")
         self.configure(bg=BG)
@@ -2966,6 +3313,10 @@ class ContinuumGUI(tk.Tk):
         self._sim    = simulated
         self._port   = port
         self._baud   = baud
+        self._use_pose_udp = bool(use_pose_udp)
+        self._pose_host = pose_host
+        self._pose_port = int(pose_port)
+        self._pose_receiver = None
         self._disps  = [0.0] * 6
         self._speeds = [0.0] * 6
         self._connected = False
@@ -2974,6 +3325,18 @@ class ContinuumGUI(tk.Tk):
         self.bus:   Optional[RS485Bus]        = None
 
         self._build()
+        if self._use_pose_udp and not self._sim and HAS_POSE_FEEDBACK:
+            self._pose_receiver = UdpPoseFeedbackReceiver(
+                host=self._pose_host,
+                port=self._pose_port,
+                max_age_s=0.35,
+                filter_cutoff_hz=2.0,
+                filter_sample_hz=30.0,
+            )
+            self._pose_receiver.start()
+            self._log(f"[POSE] UDP receiver listening on {self._pose_host}:{self._pose_port}", "ok")
+        elif self._use_pose_udp and not self._sim and not HAS_POSE_FEEDBACK:
+            self._log("[POSE] pose_feedback.py not found; UDP pose feedback disabled.", "warn")
         self._start_monitor()
         self._poll_log()
 
@@ -2999,14 +3362,15 @@ class ContinuumGUI(tk.Tk):
         self._mkbtn(top,"CONNECT",  ACCENT,BG,   self._connect   ).pack(side="right",padx=3)
 
         # Body: resizable trajectory-control pane | resizable visualization pane
-        body = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=BG, sashwidth=8,
-                              sashrelief=tk.RAISED, bd=0, opaqueresize=True)
+        body = tk.PanedWindow(self, orient=tk.HORIZONTAL, bg=BG, sashwidth=10,
+                              sashrelief=tk.RAISED, bd=0, opaqueresize=True,
+                              showhandle=True, handlesize=14, sashpad=2)
         body.pack(fill="both", expand=True, padx=8, pady=6)
 
         # Left: trajectory panel only (no tab switching)
-        left_outer = tk.Frame(body, bg=BG, width=720)
+        left_outer = tk.Frame(body, bg=BG, width=620)
         left_outer.pack_propagate(False)
-        body.add(left_outer, minsize=460, stretch="always")
+        body.add(left_outer, minsize=280, stretch="always")
 
         tbar = tk.Frame(left_outer, bg=BG)
         tbar.pack(fill="x", pady=(0,6))
@@ -3022,13 +3386,15 @@ class ContinuumGUI(tk.Tk):
             set_disps_fn = self._apply_disps_from_ctrl,
             log_fn       = self._log,
             simulated    = self._sim,
+            get_pose_sample_fn = (lambda: self._pose_receiver.latest()
+                                  if self._pose_receiver else None),
         )
         self._traj_panel.pack(fill="both", expand=True)
 
         # Right: resizable motor pane | resizable continuum-view pane
         right = tk.PanedWindow(body, orient=tk.VERTICAL, bg=BG, sashwidth=8,
                                sashrelief=tk.RAISED, bd=0, opaqueresize=True)
-        body.add(right, minsize=430, stretch="always")
+        body.add(right, minsize=320, stretch="always")
 
         motor_pane = tk.Frame(right, bg=BG)
         self._capstan_panel = CapstanPanel(motor_pane)
@@ -3179,6 +3545,10 @@ class ContinuumGUI(tk.Tk):
 
     def _close(self):
         self._stop_monitor()
+        if self._pose_receiver:
+            try: self._pose_receiver.stop()
+            except: pass
+            self._pose_receiver = None
         if self.robot:
             try: self.robot.close()
             except: pass
@@ -3198,6 +3568,12 @@ if __name__ == "__main__":
                     help="Serial port (e.g. COM3, /dev/ttyUSB0, /dev/ttyACM0)")
     ap.add_argument("--baud",   default=115200, type=int,
                     help="Baud rate for RS-485 (default: 115200)")
+    ap.add_argument("--pose-host", default="127.0.0.1",
+                    help="UDP host/IP for measured end-effector pose feedback")
+    ap.add_argument("--pose-port", default=5005, type=int,
+                    help="UDP port for measured end-effector pose feedback")
+    ap.add_argument("--no-pose-udp", action="store_true",
+                    help="Disable UDP end-effector pose feedback in real hardware mode")
     ap.add_argument("--list-ports", action="store_true",
                     help="List available serial ports and exit")
     args = ap.parse_args()
@@ -3216,6 +3592,9 @@ if __name__ == "__main__":
         simulated = not args.real,
         port      = args.port,
         baud      = args.baud,
+        use_pose_udp = not args.no_pose_udp,
+        pose_host = args.pose_host,
+        pose_port = args.pose_port,
     )
     app.protocol("WM_DELETE_WINDOW", app._close)
     app.mainloop()
