@@ -1,0 +1,8 @@
+# MuJoCo_Sim dependencies — Phase 0 verified on Python 3.14.6 (Windows)
+# Install:  python -m pip install -r MuJoCo_Sim/requirements.txt
+
+mujoco==3.11.0            # physics engine (pulls glfw, pyopengl, etils, absl-py)
+numpy==2.5.1              # already required by Continuum_v3
+matplotlib==3.11.1        # Phase 5/7 tracking-error plots
+imageio==2.37.4           # Phase 7 frame writing
+imageio-ffmpeg==0.6.0     # Phase 7 MP4 encoding
