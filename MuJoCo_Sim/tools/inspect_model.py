@@ -4,10 +4,10 @@ Inspect the continuum-arm model before running anything automatic.
 Prints a structural report you can check line-by-line against the paper, then
 either opens the interactive viewer or writes a static contact sheet.
 
-    python MuJoCo_Sim/inspect_model.py                  # report + interactive viewer
-    python MuJoCo_Sim/inspect_model.py --u 3,1,0        # open in a bent pose (mm)
-    python MuJoCo_Sim/inspect_model.py --shot           # report + PNG sheet, no window
-    python MuJoCo_Sim/inspect_model.py --report         # report only
+    python run.py inspect                              # report + interactive viewer
+    python run.py inspect --u 3,1,0        # open in a bent pose (mm)
+    python run.py inspect --shot           # report + PNG sheet, no window
+    python run.py inspect --report         # report only
 
 The viewer is opened with ctrl set to the measured REST LENGTHS. That matters:
 these are position actuators on tendon LENGTH, so MuJoCo's default ctrl = 0 means
@@ -18,21 +18,19 @@ the arm appears violently contorted. Launching the raw XML with
 Author: Badhon Kumar
 """
 
-import argparse
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
 
 import mujoco
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "models"))
-
-from sim import params as P
-import build_model
-
-OUT = os.path.join(HERE, "outputs", "figures")
+from continuum_sim import build_model
+from continuum_sim import params as P
+from continuum_sim.paths import FIGURES as OUT
 
 
 # ── structural report ────────────────────────────────────────────────────────
@@ -390,9 +388,8 @@ def main():
     if a.report:
         return
     if a.shot:
-        os.makedirs(OUT, exist_ok=True)
         p = contact_sheet(model, data, rest,
-                          os.path.join(OUT, "setup_inspection.png"))
+                          OUT / "setup_inspection.png")
         print(f"  sheet -> {p}\n")
         return
     viewer(model, data, rest, u, u_limit=a.limit / 1000.0)

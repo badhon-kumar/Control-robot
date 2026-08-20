@@ -4,10 +4,10 @@ Live closed-loop run: the controller drives the MuJoCo arm in the viewer.
 Shows the reference path and the tip's actual path together, so tracking error
 is visible directly rather than only in a plot afterwards.
 
-    python MuJoCo_Sim/run_live.py                    # starts on the ellipse
-    python MuJoCo_Sim/run_live.py --speed 8          # 8x real time
-    python MuJoCo_Sim/run_live.py --no-kalman
-    python MuJoCo_Sim/run_live.py --gcode triangle.gcode
+    python run.py live                    # starts on the ellipse
+    python run.py live --speed 8          # 8x real time
+    python run.py live --no-kalman
+    python run.py live --gcode triangle.gcode
 
 The arm starts STRAIGHT AND STATIONARY with the reference path already drawn, so
 nothing moves until S is pressed. N / B browse the ellipse plus every .gcode file
@@ -15,7 +15,7 @@ in MuJoCo_Sim/gcode/, and switching preserves the run state - browse as much as
 you like while idle, or swap shapes mid-run without relaunching. S stops a
 running arm where it is, and reruns a finished one.
 
-The control loop matches check_phase4.py exactly: the controller only reads the
+The control loop matches checks/closed_loop.py exactly: the controller only reads the
 arm once it is quasi-static, which is the assumption the paper's method rests on.
 Physics runs continuously between control updates, so the motion you see is the
 arm's real transient, not interpolation.
@@ -29,22 +29,23 @@ a deposited bead, is Phase 6.
 Author: Badhon Kumar
 """
 
-import argparse
-import glob
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import argparse
+import glob
 import time
 
 import mujoco
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "controller"))
-
-from sim import params as P
-from sim.plant import ContinuumPlant
-from sim import bridge as B
+from continuum_sim import bridge as B
+from continuum_sim import params as P
+from continuum_sim import vendor  # noqa: F401
+from continuum_sim.paths import GCODE as GCODE_DIR
+from continuum_sim.plant import ContinuumPlant
 from continuum_ellipse import make_trajectory
 from gcode_trajectory import load_gcode_file
 
@@ -54,7 +55,6 @@ from gcode_trajectory import load_gcode_file
 # The parser is the vendored copy of the hardware's own gcode_trajectory.py (see
 # controller/README.md), so what the simulation follows is exactly what the
 # hardware would follow.
-GCODE_DIR = os.path.join(HERE, "gcode")
 
 U_LIMIT = 0.012
 FRAME = 1.0 / 60.0
@@ -127,7 +127,7 @@ def _add_sphere(scn, pos, radius, rgba):
 def discover_trajectories():
     """The paper ellipse, plus every .gcode file in MuJoCo_Sim/gcode/."""
     out = [("Traj. 1 ellipse (paper)", None)]
-    for p in sorted(glob.glob(os.path.join(GCODE_DIR, "*.gcode"))):
+    for p in sorted(glob.glob(os.path.join(str(GCODE_DIR), "*.gcode"))):
         out.append((os.path.basename(p), p))
     return out
 

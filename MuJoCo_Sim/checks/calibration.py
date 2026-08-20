@@ -11,7 +11,7 @@ of sim/calibrate.py. Stiffness is instead justified physically, and the mismatch
 is measured and reported as the model-error budget.
 
 Run:
-    python MuJoCo_Sim/check_phase3.py
+    python run.py check calibration
 
 Author: Badhon Kumar
 """
@@ -19,29 +19,21 @@ Author: Badhon Kumar
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+from continuum_sim import calibrate as C
+from continuum_sim import params as P
+from continuum_sim.paths import FIGURES, LOGS
+from continuum_sim.plant import ContinuumPlant
 
-from sim import params as P
-from sim.plant import ContinuumPlant
-from sim import calibrate as C
+from checks.harness import Report
+from checks.harness import ok as _ok, fail as _fail, warn as _warn
 
-OUT = os.path.join(HERE, "outputs")
+report = Report()
+expect = report.expect
 
-
-def _ok(m):   print(f"  [ OK ] {m}")
-def _fail(m): print(f"  [FAIL] {m}")
-def _warn(m): print(f"  [WARN] {m}")
-
-failures = []
-def expect(cond, good, bad):
-    if cond:
-        _ok(good)
-    else:
-        _fail(bad)
-        failures.append(bad)
 
 
 # ── 1. Monotonicity and repeatability ────────────────────────────────────────
@@ -203,8 +195,7 @@ _warn("KEEPING GRAVITY OFF. For the Phase 6 printing scenario the arm bends in "
 
 # ── 6. Persist the calibration ───────────────────────────────────────────────
 print("\n[6/6] Record calibration")
-os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
-log = os.path.join(OUT, "logs", "phase3_calibration.csv")
+log = LOGS / "calibration.csv"
 with open(log, "w", encoding="utf-8", newline="\n") as f:
     f.write("u1_mm,u2_mm,u3_mm,sim_x_mm,sim_y_mm,sim_psi_deg,"
             "pcc_x_mm,pcc_y_mm,pcc_psi_deg,err_mm\n")
@@ -235,17 +226,11 @@ try:
     ax[1].set_xlabel("sum |u| (mm)"); ax[1].set_ylabel("plant - model (mm)")
     ax[1].set_title("Model-error budget vs bend magnitude"); ax[1].grid(alpha=.3)
     fig.tight_layout()
-    fp = os.path.join(OUT, "figures", "phase3_model_error.png")
+    fp = FIGURES / "calibration_model_error.png"
     fig.savefig(fp, dpi=130)
     _ok(f"figure -> {fp}")
 except Exception as e:
     _warn(f"plot skipped: {e}")
 
 
-print("\n" + "-" * 70)
-if failures:
-    print(f"Phase 3 FAILED - {len(failures)} check(s):")
-    for f_ in failures:
-        print(f"  - {f_}")
-    sys.exit(1)
-print("Phase 3 complete - all checks passed.\n")
+report.finish("Calibration")

@@ -11,7 +11,7 @@ Confirms the toolchain works before any robot modelling starts:
   5. offscreen rendering works, so Phase 7 video output is possible
 
 Run:
-    python MuJoCo_Sim/check_install.py
+    python run.py check install
 
 Author: Badhon Kumar
 """
@@ -19,12 +19,10 @@ Author: Badhon Kumar
 import os
 import sys
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "figures")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def _ok(msg):   print(f"  [ OK ] {msg}")
-def _fail(msg): print(f"  [FAIL] {msg}")
-def _warn(msg): print(f"  [WARN] {msg}")
+from checks.harness import ok as _ok, fail as _fail, warn as _warn
+from continuum_sim.paths import FIGURES as OUT_DIR
 
 
 # ── 1. Imports ────────────────────────────────────────────────────────────────
@@ -184,13 +182,12 @@ except Exception as e:
 # ── 5. Offscreen rendering (needed for Phase 7 video) ────────────────────────
 print("\n[5/5] Offscreen rendering")
 try:
-    os.makedirs(OUT_DIR, exist_ok=True)
     with mujoco.Renderer(model, height=480, width=640) as renderer:
         mujoco.mj_forward(model, data)
         renderer.update_scene(data)
         pixels = renderer.render()
 
-    png_path = os.path.join(OUT_DIR, "phase0_render.png")
+    png_path = OUT_DIR / "toolchain_render.png"
     try:
         import imageio.v3 as iio
         iio.imwrite(png_path, pixels)
@@ -202,4 +199,4 @@ except Exception as e:
     _warn("physics is fine; only Phase 7 video export is affected. "
           "Try setting MUJOCO_GL=glfw or updating GPU drivers.")
 
-print("\nPhase 0 check complete.\n")
+print("\nToolchain check complete.\n")

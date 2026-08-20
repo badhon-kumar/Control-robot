@@ -6,37 +6,33 @@ Exit criterion from PLAN.md:
   reacts - for 100+ steps without divergence, with error logged each step.
 
 Run:
-    python MuJoCo_Sim/check_phase4.py
+    python run.py check closed-loop
 
 Author: Badhon Kumar
 """
 
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import time
 
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
+from continuum_sim import bridge as B
+from continuum_sim import vendor  # noqa: F401
+from continuum_sim.paths import FIGURES, LOGS
+from continuum_sim.plant import ContinuumPlant
+from continuum_ellipse import make_trajectory
+from pose_feedback import UdpPoseFeedbackReceiver
 
-from sim.plant import ContinuumPlant
-from sim import bridge as B
+from checks.harness import Report
+from checks.harness import ok as _ok, fail as _fail, warn as _warn
 
-OUT = os.path.join(HERE, "outputs")
+report = Report()
+expect = report.expect
 
-
-def _ok(m):   print(f"  [ OK ] {m}")
-def _fail(m): print(f"  [FAIL] {m}")
-def _warn(m): print(f"  [WARN] {m}")
-
-failures = []
-def expect(cond, good, bad):
-    if cond:
-        _ok(good)
-    else:
-        _fail(bad)
-        failures.append(bad)
 
 
 # ── 1. Controller imports and constructs ─────────────────────────────────────
@@ -74,9 +70,6 @@ _ok(f"reached 1 mm at step {first_below}" if first_below is not None
 
 # ── 3. Trajectory tracking (the paper's ellipse) ─────────────────────────────
 print("\n[3/5] Closed-loop tracking of the paper's Traj. 1 ellipse")
-sys.path.insert(0, os.path.join(HERE, "controller"))
-from continuum_ellipse import make_trajectory
-
 T = 40.0
 ref_fn = make_trajectory("Traj 1", T=T)
 plant = ContinuumPlant()
@@ -143,8 +136,6 @@ expect(abs(st["rms_mm"] - st_b["rms_mm"]) > 1e-6,
 # ── 5. UDP path (lets the existing GUI consume MuJoCo unmodified) ────────────
 print("\n[5/5] UDP bridge to pose_feedback.py")
 try:
-    from pose_feedback import UdpPoseFeedbackReceiver
-
     rx = UdpPoseFeedbackReceiver(host="127.0.0.1", port=5077, max_age_s=5.0)
     rx.start()
     time.sleep(0.3)
@@ -173,8 +164,7 @@ except Exception as e:
 
 
 # ── log ──────────────────────────────────────────────────────────────────────
-os.makedirs(os.path.join(OUT, "logs"), exist_ok=True)
-p = os.path.join(OUT, "logs", "phase4_closed_loop.csv")
+p = LOGS / "closed_loop.csv"
 with open(p, "w", encoding="utf-8", newline="\n") as f:
     f.write("t_s,ref_x_mm,ref_y_mm,pose_x_mm,pose_y_mm,err_mm,u1_mm,u2_mm,u3_mm\n")
     for i in range(len(log["t"])):
@@ -206,17 +196,11 @@ try:
     ax[1].set_title("Closed-loop tracking error"); ax[1].legend()
     ax[1].grid(alpha=.3)
     fig.tight_layout()
-    fp = os.path.join(OUT, "figures", "phase4_closed_loop.png")
+    fp = FIGURES / "closed_loop.png"
     fig.savefig(fp, dpi=130)
     _ok(f"figure -> {fp}")
 except Exception as e:
     _warn(f"plot skipped: {e}")
 
 
-print("\n" + "-" * 70)
-if failures:
-    print(f"Phase 4 FAILED - {len(failures)} check(s):")
-    for f_ in failures:
-        print(f"  - {f_}")
-    sys.exit(1)
-print("Phase 4 complete - all checks passed.\n")
+report.finish("Closed loop")

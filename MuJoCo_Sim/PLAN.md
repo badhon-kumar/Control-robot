@@ -86,12 +86,28 @@ at the correct per-segment radius, not a single constant.
 MuJoCo_Sim/                     SELF-CONTAINED - no sibling folders needed
 ├── PLAN.md                     this file
 ├── README.md                   how to run everything
+├── run.py                      single entry point for every command
 ├── requirements.txt
-├── check_install.py            Phase 0
-├── check_phase1..4.py          per-phase verification
-├── inspect_model.py            structural report + manual-drive viewer
-├── run_live.py                 live closed-loop tracking viewer
-├── sync_controller.py          refresh controller/ from a Continuum_v3/
+├── continuum_sim/              the simulation package
+│   ├── params.py               single source of geometry parameters
+│   ├── build_model.py          generates the MJCF from params.py
+│   ├── plant.py                MuJoCo plant: step(u) -> tip pose
+│   ├── bridge.py               controller <-> plant + UDP publisher
+│   ├── calibrate.py            sweeps, error stats, stiffness fitting
+│   ├── paths.py                every directory, defined once
+│   └── vendor.py               controller/ access + integrity checking
+├── checks/                     verification, named for what they test
+│   ├── harness.py              shared pass/fail reporting
+│   ├── install.py              toolchain            (was check_install)
+│   ├── geometry.py             arm structure        (was check_phase1)
+│   ├── tendons.py              tendons/actuators    (was check_phase2)
+│   ├── calibration.py          model-error budget   (was check_phase3)
+│   └── closed_loop.py          closed loop          (was check_phase4)
+├── tools/
+│   ├── inspect_model.py        structural report + manual-drive viewer
+│   ├── run_live.py             live closed-loop tracking viewer
+│   ├── make_fig6.py            reproduces Fig. 6C and 6D from the paper
+│   └── tools/sync_controller.py      refresh controller/ from a Continuum_v3/
 ├── controller/                 VENDORED, byte-identical, do not edit
 │   ├── continuum_ellipse.py    the controller under test
 │   ├── gcode_trajectory.py     G-code parser
@@ -100,21 +116,19 @@ MuJoCo_Sim/                     SELF-CONTAINED - no sibling folders needed
 │   └── README.md               provenance and re-sync instructions
 ├── gcode/                      circle, ellipse, square, triangle
 ├── models/
-│   ├── build_model.py          generates the MJCF from sim/params.py
 │   └── continuum_planar.xml    GENERATED - do not hand-edit
-├── sim/
-│   ├── params.py               single source of geometry parameters
-│   ├── plant.py                MuJoCo plant: step(u) -> tip pose
-│   ├── bridge.py               controller <-> plant + UDP publisher
-│   └── calibrate.py            sweeps, error stats, stiffness fitting
 └── outputs/
     ├── figures/
     ├── logs/
     └── video/
 ```
 
+The checks are named for what they verify rather than for the phase that built
+them; the phase numbering below is the build history, and the mapping is in the
+tree above. Run them with `python run.py check all`, or individually.
+
 The controller is **vendored** rather than imported from `Continuum_v3/` so this
-folder is portable. Copies can drift, so `check_phase1.py` step 2 verifies the
+folder is portable. Copies can drift, so `checks/geometry.py` step 2 verifies the
 vendored files against `MANIFEST.sha256`, and additionally against a sibling
 `Continuum_v3/` when one is present. See `controller/README.md`.
 
@@ -129,7 +143,7 @@ vendored files against `MANIFEST.sha256`, and additionally against a sibling
 3. ~~Write `requirements.txt` with pinned versions~~
 4. ~~Work through one minimal MJCF by hand (2 bodies, 1 hinge)~~
 
-**Exit criterion met.** Verified by `python MuJoCo_Sim/check_install.py` — all 5 checks pass.
+**Exit criterion met.** Verified by `python run.py check install` — all 5 checks pass.
 
 Verified environment:
 
@@ -169,10 +183,10 @@ Results worth carrying forward:
 4. ~~`<site name="tip">` at the distal face of link 18~~
 5. ~~Gravity disabled for now~~
 
-**Exit criterion met.** Verified by `python MuJoCo_Sim/check_phase1.py` — 8/8 checks pass.
+**Exit criterion met.** Verified by `python run.py check geometry` — 8/8 checks pass.
 
-Built: `models/build_model.py` (generator), `models/continuum_planar.xml` (generated —
-do not hand-edit), `sim/params.py` (single source of geometry), `check_phase1.py`.
+Built: `continuum_sim/build_model.py` (generator), `models/continuum_planar.xml` (generated —
+do not hand-edit), `continuum_continuum_sim/params.py` (single source of geometry), `checks/geometry.py`.
 
 Model: 20 bodies, 18 hinges (all +z, so motion is provably planar), 37 geoms, 5 sites,
 total mass 20.9 g. Undeformed tip lands at exactly (270.000000, 0.000000) mm.
@@ -222,18 +236,18 @@ double the compute.
 - **Contacts disabled globally** (`contype/conaffinity = 0`). Scope is tip-path only, so
   no collision is needed; this also removes adjacent-disk self-collision and speeds the
   solve. The Phase 6 print bed will be visual-only.
-- **Parameter drift is now guarded.** `check_phase1.py` step 2 imports
+- **Parameter drift is now guarded.** `checks/geometry.py` step 2 imports
   `continuum_ellipse.py` and asserts `L_SEG`, `R_TENDON` and the disk counts still match.
   That import is clean and `__main__`-guarded (no GUI opens), which also de-risks the
   Phase 4 controller import.
 - **Joint stiffness 0.6 N·m/rad is a derived placeholder, not a fit** — derivation is in
-  `sim/params.py`. Phase 3 replaces it.
+  `continuum_continuum_sim/params.py`. Phase 3 replaces it.
 
 ---
 
 ### Phase 2 — Tendons and actuators ✅ COMPLETE
 
-**Exit criterion met** (revised — see below). `python MuJoCo_Sim/check_phase2.py`, 8/8 pass.
+**Exit criterion met** (revised — see below). `python run.py check tendons`, 8/8 pass.
 6 spatial tendons, 6 pull-only position actuators, measured rest lengths 90 / 181.5 / 273 mm.
 
 #### Correction: `R_TENDON` is indexed by segments-back, not by segment
@@ -294,8 +308,8 @@ radius — spreading it across a span costs 2.4% of the own-segment moment arm.
 
 ### Phase 3 — Calibration ✅ COMPLETE
 
-**Exit criterion met.** `python MuJoCo_Sim/check_phase3.py`, 6/6 pass.
-Built `sim/plant.py`, `sim/calibrate.py`.
+**Exit criterion met.** `python run.py check calibration`, 6/6 pass.
+Built `continuum_continuum_sim/plant.py`, `continuum_continuum_sim/calibrate.py`.
 
 #### The plan's objective was wrong and has been changed
 
@@ -305,7 +319,7 @@ controller's model; driving the discrepancy to zero rebuilds the section-1 tauto
 more machinery, and would make Phase 5 meaningless.
 
 Changed to: justify stiffness **physically**, then *measure* the mismatch and report it as
-the model-error budget. `fit_stiffness()` exists in `sim/calibrate.py` and fits against
+the model-error budget. `fit_stiffness()` exists in `continuum_continuum_sim/calibrate.py` and fits against
 **measured tip poses** — the right tool the day hardware data exists (open question 2). It
 is deliberately not pointed at PCC-generated targets.
 
@@ -335,7 +349,7 @@ realistic for a 13 mm tendon-driven arm.
 > **Saturation trap.** The first run reported a 168% stiffness sensitivity. That was a
 > binding 60 N `forcerange`, not physics — the true figure is 8.7%. A force clamp does not
 > announce itself, it just changes the answer. `TENDON_FORCE_MAX` is now 80 N and
-> `check_phase3.py` tests for saturation explicitly.
+> `checks/calibration.py` tests for saturation explicitly.
 
 #### Gravity: staying OFF
 
@@ -350,7 +364,7 @@ re-run.** A planar model cannot represent out-of-plane sag at all.
 
 ### Phase 4 — Controller bridge ✅ COMPLETE
 
-**Exit criterion met.** `python MuJoCo_Sim/check_phase4.py`, 5/5 pass. Built `sim/bridge.py`.
+**Exit criterion met.** `python run.py check closed-loop`, 5/5 pass. Built `continuum_continuum_sim/bridge.py`.
 
 - **Regulation:** 42.43 mm → 0.0000 mm, reaching 1 mm by step 10.
 - **Ellipse tracking:** 200 steps, no divergence, **2.75 mm RMS** after warm-up.
@@ -470,11 +484,11 @@ and follows the nozzle, and commanded-vs-deposited deviation is quantified.
 
 ## 8. Progress
 
-- [x] Phase 0 — Environment *(complete — `check_install.py`, 5/5 pass)*
-- [x] Phase 1 — Planar arm model *(complete — `check_phase1.py`, 8/8 pass)*
-- [x] Phase 2 — Tendons and actuators *(complete — check_phase2.py, 8/8)*
-- [x] Phase 3 — Calibration *(complete — check_phase3.py, 6/6)*
-- [x] Phase 4 — Controller bridge *(complete — check_phase4.py, 5/5)*
+- [x] Phase 0 — Environment *(complete — `checks/install.py`, 5/5 pass)*
+- [x] Phase 1 — Planar arm model *(complete — `checks/geometry.py`, 8/8 pass)*
+- [x] Phase 2 — Tendons and actuators *(complete — checks/tendons.py, 8/8)*
+- [x] Phase 3 — Calibration *(complete — checks/calibration.py, 6/6)*
+- [x] Phase 4 — Controller bridge *(complete — checks/closed_loop.py, 5/5)*
 - [ ] Phase 5 — Ellipse tracking reproduction
 - [ ] Phase 6 — Printing process reproduction
 - [ ] Phase 7 — Deliverables

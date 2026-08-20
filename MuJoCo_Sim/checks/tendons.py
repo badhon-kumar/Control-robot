@@ -7,7 +7,7 @@ Exit criterion from PLAN.md:
   direction is correct and repeatable.
 
 Run:
-    python MuJoCo_Sim/check_phase2.py
+    python run.py check tendons
 
 Author: Badhon Kumar
 """
@@ -15,30 +15,22 @@ Author: Badhon Kumar
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import mujoco
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "models"))
+from continuum_sim import build_model, vendor
+from continuum_sim import params as P
+from continuum_sim.paths import FIGURES as OUT_DIR
+from continuum_ellipse import pcc_angles
 
-from sim import params as P
-import build_model
+from checks.harness import Report
+from checks.harness import ok as _ok, fail as _fail, warn as _warn
 
-OUT_DIR = os.path.join(HERE, "outputs", "figures")
+report = Report()
+expect = report.expect
 
-
-def _ok(m):   print(f"  [ OK ] {m}")
-def _fail(m): print(f"  [FAIL] {m}")
-def _warn(m): print(f"  [WARN] {m}")
-
-failures = []
-def expect(cond, good, bad):
-    if cond:
-        _ok(good)
-    else:
-        _fail(bad)
-        failures.append(bad)
 
 
 def tip_pose(model, data):
@@ -212,9 +204,6 @@ expect(arm_err < 1e-6,
 # ── 6. Plant vs controller model (the comparison that matters) ───────────────
 print("\n[6/8] MuJoCo segment angles vs the controller's pcc_angles()")
 try:
-    sys.path.insert(0, os.path.join(HERE, "controller"))
-    from continuum_ellipse import pcc_angles
-
     print("        u (mm)              PCC theta (deg)        MuJoCo theta (deg)"
           "     max dev")
     worst = 0.0
@@ -293,7 +282,6 @@ expect(not bad,
 # ── 8. Render ────────────────────────────────────────────────────────────────
 print("\n[8/8] Render")
 try:
-    os.makedirs(OUT_DIR, exist_ok=True)
     cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "planar")
     frames = []
     with mujoco.Renderer(model, height=600, width=900) as r:
@@ -303,17 +291,11 @@ try:
             r.update_scene(d8, camera=cam)
             frames.append(r.render())
     import imageio.v3 as iio
-    path = os.path.join(OUT_DIR, "phase2_tendons.png")
+    path = OUT_DIR / "tendons_actuation.png"
     iio.imwrite(path, np.concatenate(frames, axis=1))
     _ok(f"rendered rest / u1 / u2 / u3 actuation -> {path}")
 except Exception as e:
     _warn(f"render skipped: {e}")
 
 
-print("\n" + "-" * 70)
-if failures:
-    print(f"Phase 2 FAILED - {len(failures)} check(s):")
-    for f in failures:
-        print(f"  - {f}")
-    sys.exit(1)
-print("Phase 2 complete - all checks passed.\n")
+report.finish("Tendons")

@@ -18,17 +18,11 @@ Author: Badhon Kumar
 """
 
 import json
-import os
 import socket
-import sys
 
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "controller"))
-
+from . import vendor  # noqa: F401  - puts the vendored controller/ on sys.path
 from continuum_ellipse import KalmanJacobianController
 
 

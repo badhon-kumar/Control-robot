@@ -22,7 +22,7 @@ Vendoring means there are now two copies of the controller, which can drift apar
 — and silent drift would invalidate every result without any error appearing.
 
 `MANIFEST.sha256` records the SHA-256 of each file as vendored.
-`check_phase1.py` verifies it on every run:
+`checks/geometry.py` verifies it on every run:
 
 - it always checks the vendored files still match the manifest, so local edits
   here are caught immediately;
@@ -38,11 +38,11 @@ If you edit `Continuum_v3/continuum_ellipse.py`, the vendored copy is stale.
 Refresh it and regenerate the manifest:
 
 ```powershell
-python MuJoCo_Sim/sync_controller.py
+python run.py sync
 ```
 
 That copies the current `Continuum_v3/` files in and rewrites `MANIFEST.sha256`.
-Re-run `check_phase1.py` afterwards to confirm the geometry constants still agree.
+Re-run `checks/geometry.py` afterwards to confirm the geometry constants still agree.
 
 ## Note on dependencies
 

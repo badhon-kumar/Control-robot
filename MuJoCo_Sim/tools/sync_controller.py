@@ -6,41 +6,31 @@ controller/README.md). That copy goes stale the moment the original is edited,
 and stale means the simulation is quietly testing an OLD controller. This script
 refreshes it and rewrites MANIFEST.sha256.
 
-    python MuJoCo_Sim/sync_controller.py            # copy if different
-    python MuJoCo_Sim/sync_controller.py --check    # report only, change nothing
+    python run.py sync                    # copy if different
+    python run.py sync --check            # report only, change nothing
 
-Run check_phase1.py afterwards: it verifies the manifest and re-checks that the
-geometry constants still agree with sim/params.py.
+Run `python run.py check geometry` afterwards: it verifies the manifest and
+re-checks that the geometry constants still agree with continuum_sim/params.py.
+
+The SHA-256 and manifest logic lives in continuum_sim.vendor, shared with the
+geometry check, so the two can never disagree about what "up to date" means.
 
 Author: Badhon Kumar
 """
 
-import argparse
-import hashlib
 import os
-import shutil
 import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-VENDOR = os.path.join(HERE, "controller")
-UPSTREAM = os.path.join(os.path.dirname(HERE), "Continuum_v3")
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-FILES = ["continuum_ellipse.py", "gcode_trajectory.py", "pose_feedback.py"]
+import argparse
+import shutil
 
+from continuum_sim import paths, vendor
+from continuum_sim.vendor import FILES, sha256 as sha, write_manifest
 
-def sha(path):
-    return hashlib.sha256(open(path, "rb").read()).hexdigest()
-
-
-def write_manifest():
-    lines = []
-    for n in sorted(FILES):
-        p = os.path.join(VENDOR, n)
-        if os.path.isfile(p):
-            lines.append(f"{sha(p)}  {n}")
-    with open(os.path.join(VENDOR, "MANIFEST.sha256"), "w",
-              encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines) + "\n")
+VENDOR = paths.CONTROLLER
+UPSTREAM = paths.UPSTREAM
 
 
 def main():
@@ -59,7 +49,7 @@ def main():
 
     changed, missing = [], []
     for n in FILES:
-        s, d = os.path.join(a.src, n), os.path.join(VENDOR, n)
+        s, d = os.path.join(a.src, n), os.path.join(str(VENDOR), n)
         if not os.path.isfile(s):
             missing.append(n)
         elif not os.path.isfile(d) or sha(s) != sha(d):
@@ -75,7 +65,7 @@ def main():
     for n in changed:
         print(f"  {'would update' if a.check else 'updated'}: {n}")
         if not a.check:
-            shutil.copy2(os.path.join(a.src, n), os.path.join(VENDOR, n))
+            shutil.copy2(os.path.join(a.src, n), os.path.join(str(VENDOR), n))
 
     if a.check:
         print("\n  --check: nothing written. Re-run without it to apply.")
@@ -83,7 +73,7 @@ def main():
 
     write_manifest()
     print("\n  MANIFEST.sha256 rewritten.")
-    print("  Now run:  python MuJoCo_Sim/check_phase1.py")
+    print("  Now run:  python run.py check geometry")
     return 0
 
 

@@ -25,18 +25,11 @@ pointed at PCC-generated targets.
 Author: Badhon Kumar
 """
 
-import os
-import sys
-
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "controller"))
-
-from sim import params as P
-from sim.plant import ContinuumPlant
+from . import vendor  # noqa: F401  - puts the vendored controller/ on sys.path
+from . import params as P
+from .plant import ContinuumPlant
 
 from continuum_ellipse import forward_kinematics
 

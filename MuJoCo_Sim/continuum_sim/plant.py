@@ -16,19 +16,11 @@ can also feed the existing UDP pose path (pose_feedback.py) unchanged.
 Author: Badhon Kumar
 """
 
-import os
-import sys
-
 import mujoco
 import numpy as np
 
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _ROOT)
-sys.path.insert(0, os.path.join(_ROOT, "models"))
-
-from sim import params as P
-import build_model
+from . import build_model
+from . import params as P
 
 
 class ContinuumPlant:

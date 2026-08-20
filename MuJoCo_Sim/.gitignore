@@ -1,0 +1,4 @@
+# Byte-compiled files. These were previously tracked, which meant a stale .pyc
+# could shadow a moved module and produce a confusing import.
+__pycache__/
+*.py[cod]

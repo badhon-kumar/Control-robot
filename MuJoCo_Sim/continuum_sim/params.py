@@ -3,7 +3,7 @@ Single source of geometry / material parameters for the MuJoCo continuum model.
 
 Geometry values mirror `Continuum_v3/continuum_ellipse.py` (L_SEG, R_TENDON,
 SPACER_DISKS_PER_SEG, END_DISKS_PER_SEG) and the paper mechanism described in
-Continuum_v3/README.md. `check_phase1.py` cross-checks these against the
+Continuum_v3/README.md. `checks/geometry.py` cross-checks these against the
 controller module when it is importable, so the two cannot silently drift apart.
 
 All values SI (metres, radians, kg).
@@ -111,7 +111,7 @@ TENDON_WIDTH = 0.0006                   # visual only, m
 # it models a position-controlled capstan (the LKM motors' native mode).
 # kp must be stiff relative to the arm's effective tendon stiffness
 # k/(n*r^2) ~ 4000 N/m for segment 1, or commanded displacement is not achieved.
-# Verified against achieved-vs-commanded length in check_phase2.py.
+# Verified against achieved-vs-commanded length in checks/tendons.py.
 TENDON_KP = 250000.0                    # N/m
 
 # Tendons pull, never push. A position actuator produces f = kp*(ctrl - len),
@@ -126,7 +126,7 @@ TENDON_KP = 250000.0                    # N/m
 # This limit MUST NOT bind during normal operation. An earlier 60 N value
 # saturated at the workspace corners and silently corrupted the Phase 3
 # stiffness study - it reported a 168% sensitivity to stiffness that was really
-# just a clipped actuator (the true figure is 8.7%). check_phase3.py now tests
+# just a clipped actuator (the true figure is 8.7%). checks/calibration.py now tests
 # for saturation explicitly so that failure mode cannot recur unnoticed.
 TENDON_FORCE_MAX = 80.0                 # N
 TENDON_CTRL_MARGIN = 0.02               # m of slack/pull allowed either side

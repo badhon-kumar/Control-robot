@@ -19,7 +19,7 @@ Checks performed:
   8. render the bent arm
 
 Run:
-    python MuJoCo_Sim/check_phase1.py
+    python run.py check geometry
 
 Author: Badhon Kumar
 """
@@ -27,30 +27,22 @@ Author: Badhon Kumar
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import mujoco
 import numpy as np
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, HERE)
-sys.path.insert(0, os.path.join(HERE, "models"))
+from continuum_sim import build_model, vendor
+from continuum_sim import params as P
+from continuum_sim.paths import FIGURES as OUT_DIR
+import continuum_ellipse as ce
 
-from sim import params as P
-import build_model
+from checks.harness import Report
+from checks.harness import ok as _ok, fail as _fail, warn as _warn
 
-OUT_DIR = os.path.join(HERE, "outputs", "figures")
+report = Report()
+expect = report.expect
 
-
-def _ok(m):   print(f"  [ OK ] {m}")
-def _fail(m): print(f"  [FAIL] {m}")
-def _warn(m): print(f"  [WARN] {m}")
-
-failures = []
-def expect(cond, good, bad):
-    if cond:
-        _ok(good)
-    else:
-        _fail(bad)
-        failures.append(bad)
 
 
 def tip_pose(model, data):
@@ -85,61 +77,37 @@ _ok(f"total mass {sum(model.body_mass)*1000:.1f} g "
 
 # ── 2. Vendored controller: integrity, and drift vs upstream ─────────────────
 #
-# The controller now lives in controller/ so MuJoCo_Sim is portable. That means
-# two copies exist and could silently diverge, which would invalidate every
-# result without raising an error. So verify BOTH:
+# The controller lives in controller/ so MuJoCo_Sim is portable. That means two
+# copies exist and could silently diverge, which would invalidate every result
+# without raising an error. So verify BOTH:
 #   a) the vendored files still match MANIFEST.sha256  (always checkable)
 #   b) they still match a sibling Continuum_v3/, if one is present
+# Both are implemented in continuum_sim.vendor, which sync_controller.py shares.
 print("\n[2/8] Vendored controller integrity")
-VENDOR = os.path.join(HERE, "controller")
-import hashlib
 
-
-def _sha(p):
-    return hashlib.sha256(open(p, "rb").read()).hexdigest()
-
-
-manifest = os.path.join(VENDOR, "MANIFEST.sha256")
-if os.path.isfile(manifest):
-    bad = []
-    for line in open(manifest, encoding="utf-8"):
-        line = line.strip()
-        if not line:
-            continue
-        want, name = line.split("  ", 1)
-        p = os.path.join(VENDOR, name)
-        if not os.path.isfile(p):
-            bad.append(f"{name} missing")
-        elif _sha(p) != want:
-            bad.append(f"{name} modified")
-    expect(not bad,
-           f"all {sum(1 for _ in open(manifest, encoding='utf-8') if _.strip())} "
-           f"vendored files match MANIFEST.sha256 - the controller under test is "
-           f"byte-identical to what was vendored",
-           f"vendored controller has been altered: {', '.join(bad)}. "
-           f"Re-run sync_controller.py or restore the files.")
+intact, problems = vendor.check_integrity()
+if not vendor.read_manifest():
+    _warn(problems[0])
 else:
-    _warn("controller/MANIFEST.sha256 missing - cannot verify vendored files")
+    expect(intact,
+           f"all {len(vendor.read_manifest())} vendored files match "
+           f"MANIFEST.sha256 - the controller under test is byte-identical to "
+           f"what was vendored",
+           f"vendored controller has been altered: {', '.join(problems)}. "
+           f"Re-run sync_controller.py or restore the files.")
 
-upstream = os.path.join(os.path.dirname(HERE), "Continuum_v3")
-if os.path.isdir(upstream):
-    drift = [n for n in ("continuum_ellipse.py", "gcode_trajectory.py",
-                         "pose_feedback.py")
-             if os.path.isfile(os.path.join(upstream, n))
-             and _sha(os.path.join(upstream, n)) != _sha(os.path.join(VENDOR, n))]
-    if drift:
-        _warn(f"UPSTREAM DRIFT: {', '.join(drift)} differ from Continuum_v3/. "
-              f"The simulation is running an OLD controller. "
-              f"Run sync_controller.py to update.")
-    else:
-        _ok("vendored copies are identical to the sibling Continuum_v3/")
+status, drift = vendor.check_drift()
+if status == "drift":
+    _warn(f"UPSTREAM DRIFT: {', '.join(drift)} differ from Continuum_v3/. "
+          f"The simulation is running an OLD controller. "
+          f"Run sync_controller.py to update.")
+elif status == "clean":
+    _ok("vendored copies are identical to the sibling Continuum_v3/")
 else:
     _ok("no sibling Continuum_v3/ present - running fully standalone")
 
 print("\n      geometry constants vs the controller")
 try:
-    sys.path.insert(0, VENDOR)
-    import continuum_ellipse as ce
     expect(list(ce.L_SEG) == list(P.L_SEG),
            f"L_SEG matches: {P.L_SEG}",
            f"L_SEG drift: controller {ce.L_SEG} vs params {P.L_SEG}")
@@ -287,7 +255,6 @@ else:
 # ── 8. Render ────────────────────────────────────────────────────────────────
 print("\n[8/8] Render")
 try:
-    os.makedirs(OUT_DIR, exist_ok=True)
     cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "planar")
     frames = []
     with mujoco.Renderer(model, height=600, width=900) as r:
@@ -297,7 +264,7 @@ try:
             r.update_scene(data, camera=cam)
             frames.append(r.render())
     strip = np.concatenate(frames, axis=1)
-    path = os.path.join(OUT_DIR, "phase1_arm.png")
+    path = OUT_DIR / "geometry_arm.png"
     import imageio.v3 as iio
     iio.imwrite(path, strip)
     _ok(f"rendered straight / 30 deg / 60 deg poses -> {path}")
@@ -306,10 +273,4 @@ except Exception as e:
 
 
 # ── Summary ──────────────────────────────────────────────────────────────────
-print("\n" + "-" * 70)
-if failures:
-    print(f"Phase 1 FAILED - {len(failures)} check(s):")
-    for f in failures:
-        print(f"  - {f}")
-    sys.exit(1)
-print("Phase 1 complete - all checks passed.\n")
+report.finish("Geometry")
