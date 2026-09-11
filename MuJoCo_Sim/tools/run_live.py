@@ -46,6 +46,7 @@ from continuum_sim import params as P
 from continuum_sim import vendor  # noqa: F401
 from continuum_sim.paths import GCODE as GCODE_DIR
 from continuum_sim.plant import ContinuumPlant
+from continuum_sim.realism import RealismLayer, PRESETS, describe, preset
 from continuum_ellipse import make_trajectory
 from gcode_trajectory import load_gcode_file
 
@@ -183,6 +184,8 @@ def main():
                     help="seconds of trajectory time per control update "
                          "(default 0.2)")
     ap.add_argument("--no-kalman", action="store_true")
+    ap.add_argument("--realism", choices=sorted(PRESETS), default="off",
+                    help="feedback-loop imperfections preset (default off)")
     a = ap.parse_args()
 
     import mujoco.viewer
@@ -205,8 +208,10 @@ def main():
 
     st = {
         "u": np.zeros(3),
+        "u_plant": np.zeros(3),
         "kalman": not a.no_kalman,
         "ctrl": None,
+        "realism": RealismLayer(preset(a.realism)),
         "k": 0,
         "traj_t": 0.0,
         "trail": [],
@@ -241,6 +246,9 @@ def main():
         plant.reset()
         st["u"] = np.zeros(3)
         st["ctrl"] = B.make_controller(use_kalman=st["kalman"])
+        st["realism"].reset(initial_pose=plant.tip_pose(), initial_u=st["u"])
+        st["u_plant"] = st["realism"].command_to_plant(st["u"])
+        data.ctrl[:] = P.u_to_tendon_lengths(st["u_plant"], plant.rest)
         st["k"] = 0
         st["traj_t"] = 0.0
         st["trail"].clear()
@@ -308,6 +316,7 @@ def main():
 
   blue dots = reference path    orange trail = actual tip path
   speed {a.speed:.1f}x real time, Kalman {'ON' if st['kalman'] else 'OFF'}
+  realism {a.realism}: {describe(st["realism"].config)}
 
 {"  Starting immediately (--autostart)."
  if a.autostart else
@@ -345,13 +354,19 @@ def main():
                 # hard cap so a stubborn transient cannot stall the run.
                 ready = settled_for >= plant.stable_steps or since_update > 900
                 if ready and not st["done"] and not st["hold"]:
-                    pose = plant.tip_pose()
+                    true_pose = plant.tip_pose()
+                    pose = st["realism"].measure(true_pose)
                     ref = np.asarray(st["ref_fn"](st["traj_t"]), float)
                     st["err"].append(float(np.hypot(ref[0] - pose[0],
                                                     ref[1] - pose[1])))
                     u_next = st["ctrl"].compute_control(st["u"], ref, pose)
                     st["u"] = np.clip(u_next, -U_LIMIT, U_LIMIT)
-                    data.ctrl[:] = P.u_to_tendon_lengths(st["u"], plant.rest)
+                    st["u_plant"] = np.clip(
+                        st["realism"].command_to_plant(st["u"]),
+                        -U_LIMIT,
+                        U_LIMIT,
+                    )
+                    data.ctrl[:] = P.u_to_tendon_lengths(st["u_plant"], plant.rest)
 
                     st["traj_t"] += st["ctrl_dt"]
                     st["k"] += 1

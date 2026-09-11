@@ -23,7 +23,8 @@ import socket
 import numpy as np
 
 from . import vendor  # noqa: F401  - puts the vendored controller/ on sys.path
-from continuum_ellipse import KalmanJacobianController
+from .realism import RealismConfig, RealismLayer
+from continuum_ellipse import KalmanJacobianController, forward_kinematics
 
 
 def make_controller(use_kalman=True, gamma=0.5, beta=0.5, alpha=1.0,
@@ -41,9 +42,92 @@ def make_controller(use_kalman=True, gamma=0.5, beta=0.5, alpha=1.0,
     )
 
 
+def initial_u_for_pose(target_pose, u_limit=0.012):
+    """
+    Find a bounded PCC inverse-kinematic seed for the starting pose.
+
+    This avoids the singular straight-arm problem: at u = 0 the local Jacobian
+    cannot reduce x, so a pure feedback pre-roll leaves Fig. 6 starting at
+    270 mm instead of the paper's 260 mm first point.
+    """
+    target = np.asarray(target_pose, float)
+    scale = np.array([1000.0, 1000.0, 180.0 / np.pi])
+
+    def cost(u):
+        e = (forward_kinematics(np.asarray(u, float)) - target) * scale
+        return float(e @ e)
+
+    starts = [
+        np.zeros(3),
+        np.array([0.002, -0.004, 0.002]),
+        np.array([-0.002, 0.004, -0.002]),
+        np.array([0.005, -0.010, 0.005]),
+        np.array([-0.005, 0.010, -0.005]),
+        np.array([0.008, -0.012, 0.008]),
+        np.array([-0.008, 0.012, -0.008]),
+    ]
+    best = starts[0].copy()
+    best_cost = cost(best)
+    for start in starts:
+        u = np.clip(start.astype(float), -u_limit, u_limit)
+        step = 0.004
+        for _ in range(80):
+            improved = False
+            base = cost(u)
+            for j in range(3):
+                for direction in (-1.0, 1.0):
+                    trial = u.copy()
+                    trial[j] = np.clip(trial[j] + direction * step,
+                                       -u_limit, u_limit)
+                    c = cost(trial)
+                    if c < base:
+                        u = trial
+                        base = c
+                        improved = True
+            if not improved:
+                step *= 0.5
+        c = cost(u)
+        if c < best_cost:
+            best = u.copy()
+            best_cost = c
+    return best
+
+
+def preposition_to_pose(plant, target_pose, dt=0.05, n_steps=160,
+                        settle_time=1.5, realism: RealismConfig | None = None,
+                        u_limit=0.012):
+    """
+    Move the plant close to `target_pose` before a logged experiment begins.
+
+    The paper figures start from the commanded trajectory, while the MuJoCo arm
+    naturally resets straight at x = total length. This helper performs an
+    unlogged settling move, then returns the tendon command that holds the plant
+    near the first reference point.
+    """
+    ctrl = make_controller(use_kalman=True)
+    layer = RealismLayer(realism)
+    target = np.asarray(target_pose, float)
+    u_ctrl = initial_u_for_pose(target, u_limit=u_limit)
+    layer.reset(initial_pose=plant.tip_pose(), initial_u=u_ctrl)
+    u_plant = layer.command_to_plant(u_ctrl)
+
+    for _ in range(max(1, int(n_steps))):
+        true_pose = plant.step(u_plant, settle_time=settle_time, noisy=False)
+        if plant.diverged:
+            break
+        pose = layer.measure(true_pose)
+        u_ctrl = np.clip(ctrl.compute_control(u_ctrl, target, pose),
+                         -u_limit, u_limit)
+        u_plant = np.clip(layer.command_to_plant(u_ctrl), -u_limit, u_limit)
+
+    plant.step(u_plant, settle_time=settle_time, noisy=False)
+    return u_ctrl.copy(), u_plant.copy()
+
+
 def closed_loop(plant, controller, ref_fn, n_steps, dt,
-                u0=None, settle_time=1.5, noisy=False, u_limit=0.012,
-                on_step=None):
+                u0=None, u_plant0=None, settle_time=1.5, noisy=False,
+                u_limit=0.012, on_step=None,
+                realism: RealismConfig | None = None):
     """
     Run the control loop: reference -> controller -> plant -> measured pose.
 
@@ -65,29 +149,37 @@ def closed_loop(plant, controller, ref_fn, n_steps, dt,
     which breaks the quasi-static assumption the paper's method rests on.
     Always check the `settled` fraction in the log before trusting a run.
     """
-    u = np.zeros(3) if u0 is None else np.asarray(u0, float).copy()
-    log = {k: [] for k in ("t", "ref", "pose", "u", "err", "err_norm",
-                           "settled", "clamped", "K_norm")}
+    u_ctrl = np.zeros(3) if u0 is None else np.asarray(u0, float).copy()
+    layer = RealismLayer(realism)
+    layer.reset(initial_pose=plant.tip_pose(), initial_u=u_ctrl,
+                initial_applied_u=u_plant0)
+    u_plant = (np.asarray(u_plant0, float).copy()
+               if u_plant0 is not None else layer.command_to_plant(u_ctrl))
+    log = {k: [] for k in ("t", "ref", "pose", "measured_pose", "u", "u_plant",
+                           "err", "err_norm", "settled", "clamped", "K_norm")}
 
     for i in range(n_steps):
         t = i * dt
         ref = np.asarray(ref_fn(t), float)
 
-        pose = plant.step(u, settle_time=settle_time, noisy=noisy)
+        true_pose = plant.step(u_plant, settle_time=settle_time, noisy=False)
         if plant.diverged:
             log["diverged_at"] = i
             break
 
+        pose = plant.tip_pose(noisy=True) if noisy else layer.measure(true_pose)
         err = ref - pose
-        u_next = controller.compute_control(u, ref, pose)
+        u_next = controller.compute_control(u_ctrl, ref, pose)
 
         clamped = bool(np.any(np.abs(u_next) > u_limit))
         u_next = np.clip(u_next, -u_limit, u_limit)
 
         log["t"].append(t)
         log["ref"].append(ref.copy())
-        log["pose"].append(pose.copy())
-        log["u"].append(u.copy())
+        log["pose"].append(true_pose.copy())
+        log["measured_pose"].append(pose.copy())
+        log["u"].append(u_ctrl.copy())
+        log["u_plant"].append(u_plant.copy())
         log["err"].append(err.copy())
         log["err_norm"].append(float(np.hypot(err[0], err[1])))
         log["settled"].append(bool(getattr(plant, "settled", False)))
@@ -95,13 +187,14 @@ def closed_loop(plant, controller, ref_fn, n_steps, dt,
         log["K_norm"].append(float(getattr(controller, "last_K_norm", 0.0)))
 
         if on_step is not None:
-            on_step(i, t, ref, pose, u)
+            on_step(i, t, ref, pose, u_ctrl)
 
-        u = u_next
+        u_ctrl = u_next
+        u_plant = layer.command_to_plant(u_ctrl)
 
     for k in ("t", "err_norm", "K_norm"):
         log[k] = np.asarray(log[k])
-    for k in ("ref", "pose", "u", "err"):
+    for k in ("ref", "pose", "measured_pose", "u", "u_plant", "err"):
         log[k] = np.asarray(log[k])
     return log
 

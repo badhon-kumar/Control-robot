@@ -1,0 +1,56 @@
+{
+  "experiment": "fig7",
+  "figure": "Fig. 7",
+  "title": "Traj. 2 - attitude tracking, position held stationary",
+  "kind": "tracking",
+  "control_dt_s": 0.2,
+  "duration_s": 40.0,
+  "gravity": [
+    0.0,
+    -9.81,
+    0.0
+  ],
+  "warmup_steps_excluded": 0,
+  "runs": [
+    {
+      "label": "Proposed",
+      "steps": 200,
+      "kalman": true,
+      "realism": "physical",
+      "realism_details": "sensor residual 0.12 mm / 0.08 deg, sensor low-pass off, delay 0 step(s), motor speed 40.0 mm/s, drive tau 120 ms, backlash 0.25 mm, friction loss 0.20 mm, compliance 7.0%",
+      "prepositioned_to_first_reference": true,
+      "payload_kg": 0.0,
+      "payload_index": 0,
+      "payload_drop_s": null
+    },
+    {
+      "label": "PCC model",
+      "steps": 200,
+      "kalman": false,
+      "realism": "physical",
+      "realism_details": "sensor residual 0.12 mm / 0.08 deg, sensor low-pass off, delay 0 step(s), motor speed 40.0 mm/s, drive tau 120 ms, backlash 0.25 mm, friction loss 0.20 mm, compliance 7.0%",
+      "prepositioned_to_first_reference": true,
+      "payload_kg": 0.0,
+      "payload_index": 0,
+      "payload_drop_s": null
+    }
+  ],
+  "results_units": {
+    "x": "mm",
+    "y": "mm",
+    "psi": "deg"
+  },
+  "plant_params": {
+    "L_SEG": [
+      0.09,
+      0.09,
+      0.09
+    ],
+    "R_TENDON": [
+      0.005,
+      0.0035,
+      0.002
+    ],
+    "n_links": 18
+  }
+}

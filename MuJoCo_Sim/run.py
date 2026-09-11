@@ -6,7 +6,9 @@ Single entry point for everything in MuJoCo_Sim.
                                               calibration closed-loop
     python run.py inspect             structural report + manual-drive viewer
     python run.py live                live closed-loop tracking viewer
-    python run.py fig6                reproduce Fig. 6C and 6D from the paper
+    python run.py fig6                open Fig. 6 in MuJoCo
+    python run.py fig6 --real         Fig. 6 with physical imperfections
+    python run.py fig6 --real --save  save Fig. 6 Proposed/PCC comparison
     python run.py build               regenerate models/continuum_planar.xml
     python run.py sync                refresh controller/ from a Continuum_v3/
 
@@ -14,7 +16,8 @@ Anything after the command name is passed through untouched, so the tools keep
 their own flags:
 
     python run.py live --gcode triangle.gcode --speed 8
-    python run.py fig6 --steps 400 --paper-limits
+    python run.py figures
+    python run.py fig12
     python run.py sync --check
 
 Every target is also runnable on its own (`python checks/geometry.py`,
@@ -43,9 +46,15 @@ CHECKS = {
 
 TOOLS = {
     "inspect": ("tools/inspect_model.py",  "structural report + manual-drive viewer"),
-    "live":    ("tools/run_live.py",       "live closed-loop tracking viewer"),
-    "fig6":    ("tools/make_fig6.py",      "reproduce Fig. 6C and 6D"),
+    "live":    ("tools/run_live.py",       "live closed-loop tracking viewer, any trajectory"),
+    "paper":   ("tools/paper_viewer.py",   "open a paper experiment: fig6 | fig7 | fig12"),
     "sync":    ("tools/sync_controller.py", "refresh controller/ from Continuum_v3/"),
+}
+
+FIGURES = {
+    "fig6": "paper Fig. 6 experiment",
+    "fig7": "paper Fig. 7 experiment",
+    "fig12": "paper Fig. 12 experiment",
 }
 
 
@@ -57,6 +66,13 @@ def usage(code=0):
     print("\nTools:")
     for name, (_, what) in TOOLS.items():
         print(f"  {name:<13} {what}")
+    print("\nFigures:")
+    for name, what in FIGURES.items():
+        print(f"  {name:<13} {what}")
+    print("\nFigure flags:")
+    print("  --real        use physical imperfections")
+    print("  --ideal       force ideal/no-imperfection mode")
+    print("  --save        run headless and write output figures")
     print()
     return code
 
@@ -76,11 +92,53 @@ def run_check(name):
     return 0
 
 
+def figure_usage(name=None, code=0):
+    target = "fig6|fig7|fig12" if name is None else name
+    print(f"Usage: python run.py {target} [--real | --ideal] [--save] [viewer flags]\n")
+    print("Examples:")
+    print("  python run.py fig6")
+    print("  python run.py fig6 --real")
+    print("  python run.py fig6 --real --save")
+    print("  python run.py fig7 --real")
+    print("  python run.py fig12")
+    print()
+    print("Flags:")
+    print("  --real        use physical imperfections")
+    print("  --ideal       force ideal/no-imperfection mode")
+    print("  --save        run headless and write output figures")
+    print("  --speed N     viewer playback speed multiplier")
+    print("  --autorun     start immediately")
+    return code
+
+
+def figure_args(name, argv):
+    """Map simple figure commands to paper_viewer.py arguments."""
+    out = [name]
+    for a in argv:
+        if a == "--real":
+            out += ["--realism", "physical"]
+        elif a == "--ideal":
+            out += ["--realism", "off"]
+        else:
+            out.append(a)
+    return out
+
+
 def main(argv):
     if not argv or argv[0] in ("-h", "--help", "help"):
         return usage()
 
     cmd, rest = argv[0], argv[1:]
+
+    if cmd in FIGURES:
+        if any(a in ("-h", "--help", "help") for a in rest):
+            return figure_usage(cmd)
+        run_script("tools/paper_viewer.py", figure_args(cmd, rest))
+        return 0
+
+    if cmd in ("figures", "list-figures"):
+        run_script("tools/paper_viewer.py", ["list"])
+        return 0
 
     if cmd == "check":
         if not rest or rest[0] == "all":

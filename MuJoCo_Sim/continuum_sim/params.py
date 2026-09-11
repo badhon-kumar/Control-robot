@@ -42,27 +42,42 @@ SPACER_DISKS_PER_SEG = 5                # (SPACER_DISKS_PER_SEG)
 END_DISKS_PER_SEG = 1                   # (END_DISKS_PER_SEG)
 DISKS_PER_SEG = SPACER_DISKS_PER_SEG + END_DISKS_PER_SEG   # 6
 
-# One rigid link per disk, so link boundaries land exactly on physical disks.
-LINKS_PER_SEG = DISKS_PER_SEG           # 6
+# One elastic link per physical disk interval. This matches the paper geometry:
+# 5 spacer disks + 1 end disk per 90 mm segment, i.e. 15 mm disk pitch.
+LINKS_PER_SEG = DISKS_PER_SEG
 N_LINKS = N_SEG * LINKS_PER_SEG         # 18
-LINK_LEN = L_SEG[0] / LINKS_PER_SEG     # 0.015 m axial disk pitch
+LINK_LEN = L_SEG[0] / LINKS_PER_SEG     # 0.015 m elastic-link pitch
 
 # ── Physical cross-section ───────────────────────────────────────────────────
 BODY_DIAM = 0.013                       # manipulator diameter, m (README)
 DISK_RADIUS = BODY_DIAM / 2             # 0.0065 m
 DISK_THICK = 0.0015                     # spacer disk thickness, m
-BACKBONE_RADIUS = 0.0015                # central backbone rod radius, m
+BACKBONE_RADIUS = 0.0003                # 0.6 mm diameter NiTi elastic rods
+BACKBONE_OFFSETS = (
+    (0.0, -0.0052),
+    (0.0, 0.0052),
+)                                           # (y, z), two outer holes through disks
+BACKBONE_COLOR = "0.78 0.76 0.70 1"    # NiTi backbone visual
 BASE_DISK_RADIUS = 0.009
 BASE_DISK_THICK = 0.003
 
-# Backbone radius must stay inside the smallest tendon routing radius, otherwise
-# segment-3 tendons would be routed through the middle of the backbone geom.
-assert BACKBONE_RADIUS < min(R_TENDON), "backbone too thick for segment-3 tendon radius"
+PIN_RADIUS = 0.0005                     # 1 mm diameter NiTi revolute pin
+PIN_HALF_LEN = 0.0045                   # only the needed joint span, avoids backbone holes
+PIN_COLOR = "0.82 0.82 0.78 1"
+
+# Backbone rods must stay inside the smallest tendon routing radius, otherwise
+# segment-3 tendons would be routed through the backbone geoms.
+assert max(math.hypot(y, z) + BACKBONE_RADIUS for y, z in BACKBONE_OFFSETS) < DISK_RADIUS, \
+    "backbone rods must fit inside the disk radius"
+assert all(abs(z) - BACKBONE_RADIUS > PIN_HALF_LEN for y, z in BACKBONE_OFFSETS
+           if abs(y) < PIN_RADIUS + BACKBONE_RADIUS), \
+    "pin length interferes with the elastic backbone holes"
 assert max(R_TENDON) < DISK_RADIUS, "tendon radius must fit inside the disks"
 
 # ── Materials ────────────────────────────────────────────────────────────────
 BACKBONE_DENSITY = 6450.0               # NiTi, kg/m^3
 DISK_DENSITY = 1400.0                   # printed polymer, kg/m^3
+DISK_MASS = 0.00045                     # kg, keeps STL-chain mass near paper's 8.4 g
 
 # ── Elastic properties — PLACEHOLDER, fitted in Phase 3 ──────────────────────
 #

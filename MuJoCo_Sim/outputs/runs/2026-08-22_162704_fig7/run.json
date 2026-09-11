@@ -1,0 +1,67 @@
+{
+  "saved": "2026-08-22_162704",
+  "trajectory": "Fig. 7 - Traj. 2 - attitude tracking, position held stationary",
+  "control_steps": 200,
+  "control_dt_s": 0.2,
+  "settle_time_s": 1.5,
+  "warmup_steps_excluded": 40,
+  "settled_steps": {
+    "proposed": 200,
+    "pcc": 200
+  },
+  "results_units": {
+    "x": "mm",
+    "y": "mm",
+    "psi": "deg"
+  },
+  "rmse": {
+    "proposed": [
+      0.026380976400688733,
+      0.015744687160070426,
+      1.3216144327017898
+    ],
+    "pcc": [
+      0.13624184280299204,
+      0.10018630187273565,
+      1.5098869436698548
+    ]
+  },
+  "mae": {
+    "proposed": [
+      0.022030691945979806,
+      0.013367084974604954,
+      1.1653749348161548
+    ],
+    "pcc": [
+      0.11935923949031382,
+      0.08214899817271114,
+      1.3279016189377433
+    ]
+  },
+  "plant_params": {
+    "L_SEG": [
+      0.09,
+      0.09,
+      0.09
+    ],
+    "R_TENDON": [
+      0.005,
+      0.0035,
+      0.002
+    ],
+    "n_links": 18,
+    "link_len_m": 0.015
+  },
+  "run": {
+    "experiment": "fig7",
+    "figure": "Fig. 7",
+    "duration_s": 40.0,
+    "gravity": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "kind": "tracking",
+    "notes": "Panels B and C. Gravity off: horizontal bending plane."
+  }
+}

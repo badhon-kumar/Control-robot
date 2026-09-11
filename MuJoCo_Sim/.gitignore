@@ -2,3 +2,6 @@
 # could shadow a moved module and produce a confusing import.
 __pycache__/
 *.py[cod]
+
+# VS Code Code Runner scratch file
+tempCodeRunnerFile.py

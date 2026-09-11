@@ -32,6 +32,7 @@ class ContinuumPlant:
                  seg_stiffness_scale=None,
                  tendon_kp=None,
                  links_per_seg=None,
+                 payload_kg=0.0,
                  settle_time=2.0,
                  pos_tol=1e-7,
                  stable_steps=25,
@@ -48,6 +49,7 @@ class ContinuumPlant:
             seg_stiffness_scale=seg_stiffness_scale,
             tendon_kp=tendon_kp,
             links_per_seg=links_per_seg,
+            payload_kg=payload_kg,
         )
         self.model = mujoco.MjModel.from_xml_string(self.xml)
         self.data = mujoco.MjData(self.model)

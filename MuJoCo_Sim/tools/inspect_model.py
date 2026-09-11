@@ -50,12 +50,16 @@ def report(model, data, rest):
     hdr("GEOMETRY (vs Continuum_v3/README.md)")
     print(f"  segments            {P.N_SEG} x {P.L_SEG[0]*1000:.0f} mm "
           f"= {P.TOTAL_LEN*1000:.0f} mm total")
-    print(f"  links per segment   {P.LINKS_PER_SEG}  "
-          f"({P.SPACER_DISKS_PER_SEG} spacer + {P.END_DISKS_PER_SEG} end disk)")
-    print(f"  axial disk pitch    {P.LINK_LEN*1000:.1f} mm")
+    print(f"  links per segment   {P.LINKS_PER_SEG} elastic links  "
+          f"({P.SPACER_DISKS_PER_SEG} spacer + {P.END_DISKS_PER_SEG} physical end disk)")
+    print(f"  elastic-link pitch  {P.LINK_LEN*1000:.1f} mm")
     print(f"  body diameter       {P.BODY_DIAM*1000:.1f} mm "
           f"(disk radius {P.DISK_RADIUS*1000:.2f} mm)")
-    print(f"  backbone radius     {P.BACKBONE_RADIUS*1000:.2f} mm")
+    offsets = ", ".join(f"({y*1000:+.2f}, {z*1000:+.2f})"
+                        for y, z in P.BACKBONE_OFFSETS)
+    print(f"  elastic backbones   {len(P.BACKBONE_OFFSETS)} NiTi rods, "
+          f"{2*P.BACKBONE_RADIUS*1000:.2f} mm diameter, "
+          f"(y,z) offsets [{offsets}] mm")
 
     hdr("TENDON ROUTING  (radius in mm, by which segment it passes through)")
     print("   motor  seg  |  in seg1   in seg2   in seg3  | terminates | rest mm")
@@ -207,8 +211,9 @@ def _routing_schematic(width, height):
         ax.set_facecolor("black")
         R = P.DISK_RADIUS * 1000
         ax.add_patch(plt.Circle((0, 0), R, fill=False, ec="0.55", lw=1.6))
-        ax.add_patch(plt.Circle((0, 0), P.BACKBONE_RADIUS * 1000,
-                                fc="0.4", ec="0.7", lw=1.0))
+        for y, z in P.BACKBONE_OFFSETS:
+            ax.add_patch(plt.Circle((y * 1000, z * 1000), P.BACKBONE_RADIUS * 1000,
+                                    fc="0.75", ec="white", lw=1.0))
         for k in range(P.N_MOTORS):
             if P.MOTOR_TO_SEG[k] < j:
                 continue                      # already terminated below here
@@ -245,7 +250,7 @@ def _routing_schematic(width, height):
 # NOT an actuator limit - the model is stable and unsaturated out to +/-20 mm
 # (peak 53 N against the 80 N forcerange). The binding constraint is the
 # backbone: u = 12 mm bends a segment 120 deg, i.e. a 43 mm curvature radius and
-# ~3.5% surface strain at the 1.5 mm backbone radius, which is inside NiTi's
+# ~0.7% surface strain at the 0.3 mm backbone radius, which is inside NiTi's
 # superelastic range. By 20 mm the segment is at 190 deg and ~5.5% strain, which
 # is at the material edge and not a pose this arm would ever be driven to.
 #

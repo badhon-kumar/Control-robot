@@ -1,0 +1,18 @@
+Fig. 12 - Payload disturbance while holding a stationary pose
+
+Maximum absolute error after the payload is hung
+
+Payload                         t / s      x / mm      y / mm   psi / deg
+-------------------------------------------------------------------------
+Tape core (5.6 g)              102.90         0.5         1.8         0.8
+USB converter (17.5 g)          26.70         0.5         6.8         0.6
+
+Error is measurement minus reference, as in the paper.
+
+NOTE: simulation numbers. The plant is the MuJoCo model, so what
+is compensated is MuJoCo-vs-PCC mismatch, not hardware error.
+They are not directly comparable with the paper's tables.
+
+Gravity (0.0, -9.81, 0.0): the bending plane is taken to be VERTICAL for
+this experiment, so that a hung weight acts in plane at all.
+See continuum_sim/experiments.py.

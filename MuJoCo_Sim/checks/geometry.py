@@ -54,7 +54,19 @@ def tip_pose(model, data):
 
 
 # ── 1. Structure ─────────────────────────────────────────────────────────────
-print("\n[1/8] Model structure")
+def geom_x_extent(model, data, name):
+    """World x min/max for a mesh geom at the current pose."""
+    gid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, name)
+    mid = model.geom_dataid[gid]
+    start = model.mesh_vertadr[mid]
+    stop = start + model.mesh_vertnum[mid]
+    verts = model.mesh_vert[start:stop]
+    R = data.geom_xmat[gid].reshape(3, 3)
+    world = data.geom_xpos[gid] + verts @ R.T
+    return float(np.min(world[:, 0])), float(np.max(world[:, 0]))
+
+
+print("\n[1/9] Model structure")
 xml_path = build_model.write_xml()
 model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
@@ -83,7 +95,7 @@ _ok(f"total mass {sum(model.body_mass)*1000:.1f} g "
 #   a) the vendored files still match MANIFEST.sha256  (always checkable)
 #   b) they still match a sibling Continuum_v3/, if one is present
 # Both are implemented in continuum_sim.vendor, which sync_controller.py shares.
-print("\n[2/8] Vendored controller integrity")
+print("\n[2/9] Vendored controller integrity")
 
 intact, problems = vendor.check_integrity()
 if not vendor.read_manifest():
@@ -120,15 +132,18 @@ try:
            f"{P.END_DISKS_PER_SEG} end per segment",
            "disk counts differ from the controller module")
     n_disks_ctrl = len(ce.disk_layout_mm())
-    expect(n_disks_ctrl == P.N_LINKS + 1,
-           f"disk layout matches: {n_disks_ctrl} disks = 1 base + {P.N_LINKS} link disks",
-           f"disk layout mismatch: controller {n_disks_ctrl} vs model {P.N_LINKS + 1}")
+    expected_physical_disks = P.N_SEG * P.DISKS_PER_SEG + 1
+    expect(n_disks_ctrl == expected_physical_disks,
+           f"disk layout matches: {n_disks_ctrl} physical disks = "
+           f"1 base + {P.N_SEG} x {P.DISKS_PER_SEG}",
+           f"disk layout mismatch: controller {n_disks_ctrl} vs "
+           f"physical model {expected_physical_disks}")
 except Exception as e:
     _warn(f"controller module not importable ({e}) - skipped cross-check")
 
 
 # ── 3. Undeformed geometry ───────────────────────────────────────────────────
-print("\n[3/8] Undeformed pose")
+print("\n[3/9] Undeformed pose")
 data.qpos[:] = 0.0
 mujoco.mj_forward(model, data)
 x0, y0, psi0 = tip_pose(model, data)
@@ -140,7 +155,18 @@ expect(abs(x0 - P.TOTAL_LEN) < 1e-9 and abs(y0) < 1e-9 and abs(psi0) < 1e-9,
 
 
 # ── 4. MuJoCo vs. independent rigid-chain formula ────────────────────────────
-print("\n[4/8] MuJoCo vs. independent rigid-chain kinematics")
+print("\n[4/9] Base disk clearance")
+base_min, base_max = geom_x_extent(model, data, "base_disk")
+disk1_min, disk1_max = geom_x_extent(model, data, "disk1")
+gap = disk1_min - base_max
+expect(gap > 0.0,
+       f"base disk clears disk1 by {gap*1000:.3f} mm "
+       f"(base x {base_min*1000:.2f}..{base_max*1000:.2f}, "
+       f"disk1 x {disk1_min*1000:.2f}..{disk1_max*1000:.2f})",
+       f"base disk overlaps disk1 by {-gap*1000:.3f} mm")
+
+
+print("\n[5/9] MuJoCo vs. independent rigid-chain kinematics")
 worst = 0.0
 for theta_deg in (5, 15, 30, 45, 60):
     theta = np.radians(theta_deg)               # per-segment bend
@@ -159,7 +185,7 @@ expect(worst < 1e-9,
 
 
 # ── 5. Discretization error vs. the continuous PCC arc ───────────────────────
-print("\n[5/8] Rigid chain vs. continuous PCC arc (discretization error)")
+print("\n[6/9] Rigid chain vs. continuous PCC arc (discretization error)")
 print("        per-seg bend |   PCC arc tip (mm)   |  MuJoCo tip (mm)  |  error")
 for theta_deg in (15, 30, 45, 60, 90):
     theta = np.radians(theta_deg)
@@ -191,7 +217,7 @@ expect(err60 < 1.0,
 # Capped at 24 links/segment: MJCF nests one body per link, and 48/segment
 # (144 nested bodies) overflows the XML parser's stack and hard-crashes the
 # process (0xC00000FD). 24/segment = 72 nested bodies is safely below that.
-print("\n[6/8] Sensitivity to link count (60 deg per segment)")
+print("\n[7/9] Sensitivity to link count (60 deg per segment)")
 theta = np.radians(60)
 xa, ya, _ = P.arc_tip_pose([theta] * P.N_SEG)
 errs = {}
@@ -218,7 +244,7 @@ expect(r1 > 3.0 and r2 > 3.0,
 
 
 # ── 7. Dynamic stability ─────────────────────────────────────────────────────
-print("\n[7/8] Dynamic stability (elastic relaxation, gravity off)")
+print("\n[8/9] Dynamic stability (elastic relaxation, gravity off)")
 data2 = mujoco.MjData(model)
 # Neutralise the actuators first. A fresh MjData has ctrl = 0, which for a
 # position actuator on tendon LENGTH means "command zero length" - i.e. haul the
@@ -253,7 +279,7 @@ else:
 
 
 # ── 8. Render ────────────────────────────────────────────────────────────────
-print("\n[8/8] Render")
+print("\n[9/9] Render")
 try:
     cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "planar")
     frames = []

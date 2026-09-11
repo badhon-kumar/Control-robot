@@ -132,6 +132,27 @@ expect(abs(st["rms_mm"] - st_b["rms_mm"]) > 1e-6,
        "real to measure",
        "Kalman on/off give identical results - the comparison is degenerate")
 
+print("\n      optional feedback-loop realism")
+plant_r = ContinuumPlant()
+plant_r.reset()
+log_r = B.closed_loop(plant_r, B.make_controller(use_kalman=True),
+                      ref_fn, n_steps=40, dt=T / 200,
+                      realism=B.RealismConfig(
+                          enabled=True,
+                          sensor_pos_noise=0.00035,
+                          sensor_psi_noise=np.radians(0.5),
+                          actuator_noise=0.00005,
+                          actuator_deadband=0.00004,
+                          seed=7,
+                      ))
+pose_delta = float(np.max(np.abs(log_r["measured_pose"] - log_r["pose"])))
+u_delta = float(np.max(np.abs(log_r["u_plant"] - log_r["u"])))
+expect(pose_delta > 0.0 and u_delta > 0.0,
+       f"realism layer affects the feedback loop "
+       f"(max pose delta {pose_delta*1000:.3f} mm/rad-scale, "
+       f"max actuator delta {u_delta*1000:.3f} mm)",
+       "realism layer had no measurable effect")
+
 
 # ── 5. UDP path (lets the existing GUI consume MuJoCo unmodified) ────────────
 print("\n[5/5] UDP bridge to pose_feedback.py")

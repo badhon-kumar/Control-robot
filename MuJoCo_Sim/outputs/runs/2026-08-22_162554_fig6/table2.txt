@@ -1,0 +1,16 @@
+Trajectory tracking results - Fig. 6 - Traj. 1 - position tracking, attitude held level
+200 control steps, first 40 excluded as the initial approach transient
+
+                      x / mm          y / mm       psi / deg
+                  RMSE / MAE      RMSE / MAE      RMSE / MAE
+------------------------------------------------------------
+Proposed       1.03 /  0.95     2.55 /  2.25     0.08 /  0.07  
+PCC model      1.28 /  1.18     2.52 /  2.24     0.44 /  0.40  
+
+Proposed = online Jacobian error compensation (Kalman) enabled.
+PCC model = the same controller with compensation disabled.
+Error is measurement minus reference, as in the paper.
+
+NOTE: these are simulation numbers. The plant is the MuJoCo model,
+so what is compensated is MuJoCo-vs-PCC mismatch, not hardware
+error. They are not directly comparable with the paper's Table 2.

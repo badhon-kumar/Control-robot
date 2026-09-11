@@ -1,0 +1,16 @@
+Disturbance in a stationary pose - Fig. 12 - Payload disturbance while holding a stationary pose
+Maximum absolute error after the payload is hung at t = 3 s
+
+Payload                           x / mm      y / mm   psi / deg
+----------------------------------------------------------------
+Tape core (5.6 g)                    0.1         1.5         0.0
+Corner bracket (12.8 g)              0.1         3.3         0.1
+USB converter (17.5 g)               0.2         4.6         0.1
+
+MaxAE is measured from the drop onwards, so the approach to the
+holding pose does not contribute.
+
+NOTE: simulation numbers, and the bending plane is taken to be
+VERTICAL here so that a hung weight acts in plane at all - see
+continuum_sim/experiments.py. The MuJoCo arm is also stiffer than
+the real one, so deviations are smaller than the paper's Table 4.

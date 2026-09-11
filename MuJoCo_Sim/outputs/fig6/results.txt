@@ -1,0 +1,20 @@
+Fig. 6 - Traj. 1 - position tracking, attitude held level
+
+800 control steps, first 0 excluded as the initial approach
+Realism preset: physical (sensor residual 0.12 mm / 0.08 deg, sensor low-pass off, delay 0 step(s), motor speed 40.0 mm/s, drive tau 120 ms, backlash 0.25 mm, friction loss 0.20 mm, compliance 7.0%)
+
+                        x / mm          y / mm       psi / deg
+                    RMSE / MAE      RMSE / MAE      RMSE / MAE
+--------------------------------------------------------------
+Proposed         0.39 /  0.30     0.78 /  0.66     0.27 /  0.19  
+PCC model        0.49 /  0.43     0.80 /  0.68     0.29 /  0.21  
+
+Error is measurement minus reference, as in the paper.
+
+NOTE: simulation numbers. The plant is the MuJoCo model, so what
+is compensated is MuJoCo-vs-PCC mismatch, not hardware error.
+They are not directly comparable with the paper's tables.
+
+Gravity (0.0, -9.81, 0.0): the bending plane is taken to be VERTICAL for
+this experiment, so that a hung weight acts in plane at all.
+See continuum_sim/experiments.py.

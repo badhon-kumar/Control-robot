@@ -1,0 +1,77 @@
+{
+  "saved": "2026-08-22_162559",
+  "experiment": "fig12",
+  "figure": "Fig. 12",
+  "kind": "disturbance",
+  "control_steps": 100,
+  "control_dt_s": 0.15,
+  "settle_time_s": 1.5,
+  "gravity": [
+    0.0,
+    -9.81,
+    0.0
+  ],
+  "drop_s": 3.0,
+  "payloads_kg": [
+    0.0056,
+    0.0128,
+    0.0175
+  ],
+  "payload_names": [
+    "Tape core (5.6 g)",
+    "Corner bracket (12.8 g)",
+    "USB converter (17.5 g)"
+  ],
+  "results_units": {
+    "x": "mm",
+    "y": "mm",
+    "psi": "deg"
+  },
+  "maxae": {
+    "Tape core (5.6 g)": [
+      0.06392324623796797,
+      1.4707763294438658,
+      0.039207975941185885
+    ],
+    "Corner bracket (12.8 g)": [
+      0.14907939454517072,
+      3.3426782998985143,
+      0.08313427085679544
+    ],
+    "USB converter (17.5 g)": [
+      0.2069095654656794,
+      4.554188506309906,
+      0.10796869415463341
+    ]
+  },
+  "settled_steps": {
+    "Tape core (5.6 g)": 100,
+    "Corner bracket (12.8 g)": 100,
+    "USB converter (17.5 g)": 100
+  },
+  "plant_params": {
+    "L_SEG": [
+      0.09,
+      0.09,
+      0.09
+    ],
+    "R_TENDON": [
+      0.005,
+      0.0035,
+      0.002
+    ],
+    "n_links": 18
+  },
+  "run": {
+    "experiment": "fig12",
+    "figure": "Fig. 12",
+    "duration_s": 15.0,
+    "gravity": [
+      0.0,
+      -9.81,
+      0.0
+    ],
+    "kind": "disturbance",
+    "notes": "Panels D to F, plus Table 4 (MaxAE). Gravity IN the bending plane - a hung weight does nothing otherwise. See module docstring."
+  }
+}

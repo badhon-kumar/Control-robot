@@ -1,0 +1,67 @@
+{
+  "saved": "2026-08-22_162701",
+  "trajectory": "Fig. 6 - Traj. 1 - position tracking, attitude held level",
+  "control_steps": 200,
+  "control_dt_s": 0.2,
+  "settle_time_s": 1.5,
+  "warmup_steps_excluded": 40,
+  "settled_steps": {
+    "proposed": 200,
+    "pcc": 200
+  },
+  "results_units": {
+    "x": "mm",
+    "y": "mm",
+    "psi": "deg"
+  },
+  "rmse": {
+    "proposed": [
+      1.0280509430501654,
+      2.548532807648769,
+      0.0844311976797925
+    ],
+    "pcc": [
+      1.2788225852175548,
+      2.52454547440869,
+      0.43970376860022486
+    ]
+  },
+  "mae": {
+    "proposed": [
+      0.9478794868638246,
+      2.2524833936045447,
+      0.07477330240397809
+    ],
+    "pcc": [
+      1.17756807535137,
+      2.2415120319145343,
+      0.3957346388843742
+    ]
+  },
+  "plant_params": {
+    "L_SEG": [
+      0.09,
+      0.09,
+      0.09
+    ],
+    "R_TENDON": [
+      0.005,
+      0.0035,
+      0.002
+    ],
+    "n_links": 18,
+    "link_len_m": 0.015
+  },
+  "run": {
+    "experiment": "fig6",
+    "figure": "Fig. 6",
+    "duration_s": 40.0,
+    "gravity": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "kind": "tracking",
+    "notes": "Panels C and D. Gravity off: horizontal bending plane."
+  }
+}
